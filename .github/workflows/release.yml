@@ -1,0 +1,60 @@
+# 手动发布：GitHub → Actions → release → Run workflow
+# 按 package-lock.json 安装第三方库并生成 site/vendor/，读取 package.json 的版本号，
+# 把 site/ 打包为 finance-tools-vX.Y.Z.zip（最高压缩），创建 vX.Y.Z 标签和 Release，说明取自 CHANGELOG.md 中对应版本的内容
+name: release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: 安装第三方库（package-lock.json 锁定的版本）并生成 site/vendor/
+        run: |
+          npm ci --no-audit --no-fund
+          node scripts/vendor.js
+
+      - name: 读取版本号
+        id: v
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: 打包 site/（写入版本号，最高压缩）
+        run: |
+          V=${{ steps.v.outputs.version }}
+          D="finance-tools-v$V"
+          mkdir out && cp -r site "out/$D" && cd out
+          # 版本号：工具页由 common/ui.js 从 meta 读取显示，入口页直接写入页脚
+          find "$D" -name '*.html' -exec sed -i "s#</head>#<meta name=\"version\" content=\"v$V\">\n</head>#" {} +
+          sed -i "s#</footer>#  <p>版本 v$V</p>\n</footer>#" "$D/index.html"
+          # 购买方白名单：仓库不含（各部署自己的配置），发布包放一份只有注释的空模板
+          cat > "$D/fapiao/whitelist.ini" <<'EOF'
+          # 购买方白名单：在下方逐行填写后生效，保存为 UTF-8。
+          #
+          # 格式：每行「公司名称:统一社会信用代码」，冒号全角 / 半角均可；# 开头为注释，空行忽略。
+          # 启用后，购买方（财政票据为交款人）不在名单内、或名称与税号不对应的发票，列为「需核对」。
+          # 文件为空（只有注释也算空），或有任何一行格式不对 / 税号校验位不对时，整个白名单不生效，不校验购买方。
+          # 升级到新版本时注意保留本文件，不要被发布包中的空模板覆盖。
+
+          EOF
+          zip -9 -r "../$D.zip" "$D"
+
+      - name: 提取更新日志
+        # 用块写法：命令里含 “]: ”，写在一行会被 YAML 当成键值分隔符而解析失败
+        run: |
+          awk -v v="${{ steps.v.outputs.version }}" '/^## \[/ { f = index($0, "[" v "]") > 0; next } f && !/^\[[^]]+\]: /' CHANGELOG.md > notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          name: 财务工具 v${{ steps.v.outputs.version }}
+          body_path: notes.md
+          files: finance-tools-v${{ steps.v.outputs.version }}.zip

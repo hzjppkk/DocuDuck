@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>财务工具</title>
+<link rel="stylesheet" href="common/style.css">
+<style>
+  .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .tool {
+    display: block; padding: 24px; border-radius: 14px; text-decoration: none; color: var(--text);
+    background: var(--panel); border: 1px solid var(--border); transition: border-color .15s, box-shadow .15s;
+  }
+  .tool:hover, .tool:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); outline: none; }
+  .tool .icon { font-size: 40px; line-height: 1; }
+  .tool h2 { margin: 12px 0 6px; font-size: 20px; }
+  .tool p { margin: 0; color: var(--muted); font-size: 14px; }
+  .tool ul { margin: 12px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+  .tool .go { display: inline-block; margin-top: 14px; color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <h1>财务工具</h1>
+    <p class="sub">把 PDF 单据拖进浏览器，自动提取信息、核对数据，一键导出 Excel 台账。</p>
+    <p class="privacy">🔒 所有文件只在你自己的电脑上处理，不会上传到任何地方，断网也能用。</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="tools">
+    <a class="tool" href="fapiao/">
+      <div class="icon" aria-hidden="true">🧾</div>
+      <h2>发票整理</h2>
+      <p>数电发票（专票、普票、铁路 / 航空客票、机动车 / 二手车）、特定业务发票及财政电子票据</p>
+      <ul>
+        <li>提取票面全部要素和明细行</li>
+        <li>核对二维码、金额勾稽、大写金额、税号校验位</li>
+        <li>自动识别重复发票，按内容规范命名 PDF</li>
+      </ul>
+      <span class="go">进入 →</span>
+    </a>
+    <a class="tool" href="baoguan/">
+      <div class="icon" aria-hidden="true">📄</div>
+      <h2>报关单整理</h2>
+      <p>中华人民共和国海关出口货物报关单（打印版 PDF）</p>
+      <ul>
+        <li>提取表头全部字段和商品明细</li>
+        <li>核对 数量 × 单价 = 总价、毛重 / 净重</li>
+        <li>按内容规范命名 PDF</li>
+      </ul>
+      <span class="go">进入 →</span>
+    </a>
+  </div>
+</main>
+
+<footer class="wrap foot">
+  <p>只支持带文字层的 PDF；图片、OFD、XML 等其他格式会被自动排除，扫描件无法识别。</p>
+</footer>
+</body>
+</html>
