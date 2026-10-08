@@ -8,6 +8,7 @@
   "scripts": {
     "vendor": "node scripts/vendor.js",
     "serve": "python scripts/serve.py",
+    "serve:local": "python scripts/serve.py --local",
     "check:baoguan": "node scripts/check.js baoguan",
     "check:fapiao": "node scripts/check.js fapiao"
   },

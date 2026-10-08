@@ -20,14 +20,17 @@ const eq = (a, b, tol = 0.011) => a != null && b != null && Math.abs(a - b) <= t
 
 // ======================= 共用工具 =======================
 
-/** 找标签右侧的值：先看标签本身是否带值（“发票号码:123”），否则在同一行右侧找最近的、符合格式的文本块 */
-function valueOf(tokens, labelRe, valueRe, { xMin = -Infinity, xMax = Infinity, yMin = -Infinity, yMax = Infinity, joinRow = false } = {}) {
+/**
+ * 找标签右侧的值：先看标签本身是否带值（“发票号码:123”），否则在同一行右侧找最近的、符合格式的文本块；
+ * 以冒号结尾的块是别的标签（或单独的冒号），不作为值。rowTol：值与标签的高度差容差
+ */
+function valueOf(tokens, labelRe, valueRe, { xMin = -Infinity, xMax = Infinity, yMin = -Infinity, yMax = Infinity, joinRow = false, rowTol = ROW_TOL } = {}) {
   const labels = tokens.filter((t) => labelRe.test(t.s) && t.x >= xMin && t.x < xMax && t.y >= yMin && t.y <= yMax);
   for (const lb of labels) {
     const inline = lb.s.replace(labelRe, "").replace(/^[:：]/, "").trim();
     if (inline && (!valueRe || valueRe.test(inline))) return inline;
     const right = tokens
-      .filter((t) => t !== lb && sameRow(t, lb) && t.x > lb.x && t.x < xMax && t.y >= yMin - ROW_TOL && t.y <= yMax + ROW_TOL)
+      .filter((t) => t !== lb && !/[:：]$/.test(t.s) && sameRow(t, lb, rowTol) && t.x > lb.x && t.x < xMax && t.y >= yMin - ROW_TOL && t.y <= yMax + ROW_TOL)
       .sort((a, b) => a.x - b.x);
     if (joinRow) {
       const txt = right.map((t) => t.s).join("");
@@ -124,14 +127,16 @@ function headerColumns(T, header) {
   const MAP = [
     [/名称/, "项目名称"], [/规格型号|型号/, "规格型号"], [/^单位$/, "单位"], [/^数量$/, "数量"],
     [/^单价/, "单价"], [/^金额/, "金额"], [/税率|征收率/, "税率"], [/^税额$/, "税额"],
+    // 通行费：旧版表头为“类型”，数电为“车辆类型”
+    [/^车牌号$/, "车牌号"], [/^(车辆)?类型$/, "车辆类型"], [/^通行日期起$/, "通行日期起"], [/^通行日期止$/, "通行日期止"],
   ];
-  // 标准列按 MAP 统一命名；其他列（如通行费的“车牌号”“通行日期起”）保留原表头名
+  // 列按 MAP 统一命名；MAP 以外的列（如财政票据的“备注”）保留原表头名
   const cols = [];
   for (const m of merged) {
     const s = squash(m.s);
     const hit = MAP.find(([re]) => re.test(s));
     const name = hit ? hit[1] : s;
-    if (name && !cols.some((c) => c.name === name)) cols.push({ name, x: m.x });
+    if (name && !cols.some((c) => c.name === name)) cols.push({ name, x: m.x, cx: cx(m) });
   }
   return cols;
 }
@@ -141,18 +146,24 @@ function headerColumns(T, header) {
  * 文字按中心判断（有的票面文字居中，如通行费的车牌号、车辆类型，起点在表头左侧）。
  * 不采用“每行从右数：税额、税率、金额”的顺序法——通行费的通行日期、财政票据的项目编码也是数字列。
  */
-const NUMERIC_RE = /^-?[¥￥]?-?[\d,.]+%?$|^\*+$/;
+const NUMERIC_RE = /^-?[¥￥]?-?[\d,.]+%?$/;
+const STARS_RE = /^\*+$/; // 免税 / 不征税的税额印作“***”，有的票只有一个“*”
 function colOf(cols, t) {
-  const key = NUMERIC_RE.test(t.s) ? t.x + t.w - 1 : cx(t);
+  const stars = STARS_RE.test(t.s);
+  const key = stars || NUMERIC_RE.test(t.s) ? t.x + t.w - 1 : cx(t);
   let col = cols[0];
   for (const c of cols) if (c.x - 2 <= key) col = c;
-  return col.name;
+  // 税额栏的星号可能比表头窄、落在税率表头下方；项目名称里的“*”不受影响
+  return stars && col.name === "税率" ? "税额" : col.name;
 }
 
+/** 表头居中的网格表（财政票据）：文字可能起于表头左侧，按离哪个表头中心最近归列 */
+const nearestCol = (cols, t) => cols.reduce((a, c) => (Math.abs(c.cx - cx(t)) < Math.abs(a.cx - cx(t)) ? c : a)).name;
+
 /** 明细行：以“金额”列中的数字为行锚点，其他文字（包括折行）归入其上方最近的锚点行 */
-function parseItemRows(area, cols) {
+function parseItemRows(area, cols, col = colOf) {
   if (!cols.some((c) => c.name === "金额")) return [];
-  const withCol = area.map((t) => ({ ...t, col: colOf(cols, t) }));
+  const withCol = area.map((t) => ({ ...t, col: col(cols, t) }));
   const anchors = withCol.filter((t) => t.col === "金额" && AMOUNT_RE.test(t.s)).sort((a, b) => a.y - b.y);
   if (!anchors.length) return [];
   const rows = anchors.map((a) => ({ anchor: a, cells: {} }));
@@ -174,7 +185,7 @@ function parseItemRows(area, cols) {
       单价: toNum(txt("单价")),
       金额: toNum(txt("金额")),
       税率: txt("税率"),
-      税额: /\*{3}/.test(taxTxt) ? 0 : toNum(taxTxt),
+      税额: STARS_RE.test(taxTxt) ? 0 : toNum(taxTxt),
     };
     for (const c of cols) if (!STD.includes(c.name)) item[c.name] = txt(c.name);
     return item;
@@ -192,7 +203,7 @@ function parseExtraTable(tokens) {
   if (lines.some((l) => /[:：]/.test(l.text))) {
     const kv = {};
     for (const l of lines) {
-      const text = l.toks.map((t) => t.s).join(" ");
+      const text = l.toks.map((t) => t.s).join(" ").replace(/_/g, " "); // 非税收入票据用“_”分隔：“申请号:…_缴费日期:…_”
       // 标签不以数字开头，避免把值里的时间（如 14:45）当成下一个标签；冒号后的空格非贪婪，标签没有值时不会把下一个标签当成值
       const re = /([^\s:：\d][^\s:：]{1,23})[:：]\s*?(.*?)(?=\s+[^\s:：\d][^\s:：]{1,23}[:：]|$)/g;
       let m;
@@ -236,18 +247,24 @@ function taxNoIssues(inv) {
   return [];
 }
 
+const sumOf = (items, k) => round2(items.reduce((s, i) => s + (i[k] || 0), 0));
+
 /**
  * 明细勾稽：明细合计 = 合计；每行 金额 × 税率 ≈ 税额、数量 × 单价 ≈ 金额、数量 × 标准 = 金额（财政票据）
  * grossOk：单价也可能含税（旧版通用发票），数量 × 单价 ≈ 金额 + 税额 也算对
  */
 function itemIssues(inv, { grossOk = false } = {}) {
-  const its = inv.items || [];
+  const its = inv.items;
   if (!its.length) return ["未识别到明细行"];
   const out = [];
-  const sumA = round2(its.reduce((s, i) => s + (i.金额 || 0), 0));
-  const sumT = round2(its.reduce((s, i) => s + (i.税额 || 0), 0));
+  const sumA = sumOf(its, "金额");
+  const sumT = sumOf(its, "税额");
   if (inv.合计金额 != null && !eq(sumA, inv.合计金额)) out.push(`明细金额合计 ${sumA} ≠ 合计金额 ${inv.合计金额}`);
   if (inv.合计税额 != null && !eq(sumT, inv.合计税额, 0.011 * its.length)) out.push(`明细税额合计 ${sumT} ≠ 合计税额 ${inv.合计税额}`);
+  for (const s of inv.小计 || []) {
+    if (s.金额 != null && !eq(s.明细金额, s.金额)) out.push(`第${s.页}页 明细金额合计 ${s.明细金额} ≠ 小计 ${s.金额}`);
+    if (s.税额 != null && !eq(s.明细税额, s.税额, 0.011 * its.length)) out.push(`第${s.页}页 明细税额合计 ${s.明细税额} ≠ 小计税额 ${s.税额}`);
+  }
   its.forEach((i, n) => {
     const std = toNum(i.标准 || "");
     if (std != null && i.数量 && i.金额 != null && Math.abs(i.数量 * std - i.金额) > 0.011)
@@ -265,6 +282,11 @@ function itemIssues(inv, { grossOk = false } = {}) {
 // ======================= 增值税发票共用 =======================
 // 数电发票与旧版发票的票面下半部分版式相同：明细表、合计行、附加信息、价税合计、备注、开票人
 
+// 票面底部签名栏；旧版发票逐字排开：“开 票 人:”“收 款 人:”“复 核:”
+const KPR_RE = /^开\s*票\s*人[:：]?/;
+const PAYEE_RE = /^收\s*款\s*人[:：]?/;
+const REVIEWER_RE = /^复\s*核\s*人?[:：]?/;
+
 /** 票种标题（公告 2024 年第 11 号的 6 类数电发票，以及旧版增值税发票、机动车 / 二手车发票） */
 const TYPE_RE = /(电子发票\((?:增值税专用发票|普通发票|铁路电子客票|航空运输电子客票行程单|机动车销售统一发票|二手车销售统一发票)\)|增值税电子(?:普通|专用)发票|增值税(?:普通|专用)发票|电子普通发票|电子专用发票|机动车销售统一发票|二手车销售统一发票|航空运输电子客票行程单)/;
 
@@ -273,7 +295,7 @@ const SPECIAL_BIZ = ["建筑服务", "成品油", "报废产品收购", "旅客�
   "农产品收购", "光伏收购", "代收车船税", "自产农产品销售", "差额征税", "机动车", "二手车", "代开发票", "通行费", "医疗服务",
   "拖拉机和联合收割机", "稀土"];
 
-const findHeader = (T) => T.find((t) => /^(项目名称|货物或应税劳务.*名称|货物或应税劳务、服务名称)$/.test(squash(t.s)));
+const findHeader = (T) => T.find((t) => /^(项目名称|货物或应税劳务.*名称)$/.test(squash(t.s)));
 /** 购买方 / 销售方的竖排标记：“购”“购买方”“购买方信息”或以“购买方”开头的文字块 */
 const findMark = (T, c, rest) => T.find((t) => new RegExp(`^${c}(${rest})?(信息)?$`).test(squash(t.s)) || t.s.startsWith(c + rest));
 /** 版面锚点：明细表头、购 / 销竖排标记，partyTop 为购买方区域上沿（找不到购买方标记时为 undefined，购买方区域为空） */
@@ -298,18 +320,21 @@ function vatBody(T, inv, header) {
   const jshj = T.find((t) => /^价税合计/.test(squash(t.s)));
   if (header) {
     const cols = headerColumns(T, header);
-    const bottom = Math.min(...[xiaoji, heji, jshj].filter(Boolean).map((t) => t.y - 2), Infinity);
+    // 合计行的数字可能比“合计”二字略低（同行容差内），不能算作明细
+    const bottom = Math.min(...[xiaoji, heji, jshj].filter(Boolean).map((t) => t.y - ROW_TOL), Infinity);
     // 合计行的金额带“¥”且可能与“合计”二字有几个点的高度差，不能算作明细
     inv.items = parseItemRows(T.filter((t) => t.y > header.y + 3 && t.y < bottom && !/^-?[¥￥]/.test(t.s)), cols);
     if (heji) {
-      const row = T.filter((t) => Math.abs(t.y - heji.y) <= 8 && t.x > heji.x + 5 && /\d/.test(t.s) && (/^-?[¥￥]/.test(t.s) || sameRow(t, heji)));
-      for (const t of row) {
-        const c = colOf(cols, t);
-        if (c === "金额") inv.合计金额 = toNum(t.s);
-        else if (c === "税额") inv.合计税额 = toNum(t.s);
-      }
-      if (inv.合计税额 == null && row.length && T.some((t) => sameRow(t, heji) && /\*{3}/.test(t.s))) inv.合计税额 = 0;
+      const row = rowAmounts(T, heji, cols);
+      inv.合计金额 = row.金额;
+      inv.合计税额 = row.税额;
+      if (inv.合计税额 == null && T.some((t) => sameRow(t, heji) && STARS_RE.test(t.s))) inv.合计税额 = 0;
       if (jshj) inv.附加信息 = parseExtraTable(T.filter((t) => t.y > heji.y + ROW_TOL && t.y < jshj.y - ROW_TOL));
+    }
+    // 本页小计与本页明细合计，由 itemIssues 核对（页码由 parseInvoicePdf 填写）
+    if (xiaoji) {
+      const { 金额, 税额 } = rowAmounts(T, xiaoji, cols);
+      inv.小计 = [{ 金额, 税额, 明细金额: sumOf(inv.items, "金额"), 明细税额: sumOf(inv.items, "税额") }];
     }
   }
   if (jshj) {
@@ -320,14 +345,25 @@ function vatBody(T, inv, header) {
     if (nums.length) inv.价税合计 = toNum(nums.map((t) => t.s).join(""));
     if (small && inv.价税合计 == null) inv.价税合计 = toNum(small.s.replace(/.*小写\)?/, ""));
   }
-  const kpr = T.find((t) => /^开票人/.test(t.s));
+  const kpr = T.find((t) => KPR_RE.test(t.s));
   const bei = T.find((t) => /^备(注)?$/.test(squash(t.s)));
   if (bei) {
     const top = jshj ? jshj.y + ROW_TOL : bei.y - 20;
     const bottom = kpr ? kpr.y - ROW_TOL : bei.y + 40;
     inv.备注 = joinText(T.filter((t) => t.y > top && t.y < bottom && t.x > bei.x + 8), { sep: " " });
   }
-  inv.开票人 = valueOf(T, /^开票人[:：]?/, null);
+  inv.开票人 = valueOf(T, KPR_RE, null);
+}
+
+/** 合计 / 小计行的金额、税额（带“¥”的数字可能与标签有几个点的高度差） */
+function rowAmounts(T, lb, cols) {
+  const out = {};
+  for (const t of T.filter((t) => Math.abs(t.y - lb.y) <= 8 && t.x > lb.x + 5 && /\d/.test(t.s) && (/^-?[¥￥]/.test(t.s) || sameRow(t, lb)))) {
+    const c = colOf(cols, t);
+    if (c === "金额") out.金额 = toNum(t.s);
+    else if (c === "税额") out.税额 = toNum(t.s);
+  }
+  return out;
 }
 
 // ======================= 专家：增值税发票（数电） =======================
@@ -380,13 +416,15 @@ const LEGACY = {
     const side = T.find((t) => isChar(t) && t.y > partyTop && t.y < headY && t.x > bx + 50 &&
       T.some((u) => isChar(u) && Math.abs(u.x - t.x) < 3 && u.y > t.y && u.y - t.y < 25));
     const note = T.find((t) => /^备(注)?$/.test(t.s) && t.y > headY);
-    const foot = T.find((t) => /^收款人/.test(t.s));
+    const foot = T.find((t) => PAYEE_RE.test(t.s));
     const buyerArea = T.filter((t) => t.y > partyTop && t.y < headY - 2 && t.x > bx + 5 && (!side || t.x < side.x - 2));
     const sellerArea = !sellerMark ? [] : T.filter((t) => t.y > sellerMark.y - 15 && (!foot || t.y < foot.y - 2) &&
       t.x > sellerMark.x + 5 && (!note || t.x < note.x - 2));
     Object.assign(inv, partyInfo(buyerArea, "购买方"), partyInfo(sellerArea, "销售方"));
     vatHead(T, inv, partyTop);
     vatBody(T, inv, header);
+    inv.收款人 = valueOf(T, PAYEE_RE, null);
+    inv.复核人 = valueOf(T, REVIEWER_RE, null);
     for (const i of inv.items) {
       if ("数量/" in i) { i.数量 = toNum(i["数量/"]); delete i["数量/"]; } // 通用发票表头“数量 / 单价”
       if (/^0?\.\d+$/.test(i.税率)) i.税率 = `${+(i.税率 * 100).toFixed(2)}%`; // 通用发票税率为小数
@@ -697,16 +735,16 @@ const FISCAL = {
     inv.发票号码 = valueOf(T, /^(票据号码|缴款书号码)[:：]?/, /^\d{8,12}$/);
     inv.校验码 = valueOf(T, /^校\s*验\s*码[:：]?/, /^[0-9A-Za-z]{4,10}$/);
     inv.开票日期 = normDate(valueOf(T, /^(开票日期|填制日期)[:：]?/, /\d{4}\s*年|\d{4}-\d{2}-\d{2}|^\d{8}$/));
-    inv.购买方名称 = valueOf(T, /^交款人(?!统一)[:：]?/, null);
+    inv.购买方名称 = valueOf(T, /^交款人(?!统一)[:：]?/, null, { rowTol: 6 }); // 中央非税收入票据的值比标签低约 5 点
     inv.购买方税号 = valueOf(T, /^交款人统一社会信用代码[:：]?/, /^[0-9A-Z]{15,20}$/);
     inv.销售方名称 = valueOf(T, /^收款单位(\(章\))?[:：]?/, null);
-    const reviewer = valueOf(T, /^复核人[:：]?/, null);
-    const payee = valueOf(T, /^收款人[:：]?/, null);
 
     // 明细：表头以“项目名称”定位；“项目编码”“标准”“备注”等列保留原名
     const header = T.find((t) => squash(t.s) === "项目名称");
-    const sumLb = T.find((t) => /^金额合计/.test(squash(t.s)));
-    if (header) inv.items = parseItemRows(T.filter((t) => t.y > header.y + 3 && t.y < (sumLb ? sumLb.y - 2 : Infinity)), headerColumns(T, header));
+    // “金额合计”可能拆成“金额”“合计”两块，按整行文字找，取行首的块
+    const sumLine = groupLines(T).find((l) => /^金额合计/.test(squash(l.text)));
+    const sumLb = sumLine && sumLine.toks[0];
+    if (header) inv.items = parseItemRows(T.filter((t) => t.y > header.y + 3 && t.y < (sumLb ? sumLb.y - 2 : Infinity)), headerColumns(T, header), nearestCol);
     // 医疗收费票据的表头为“数量/单位”，值形如“1/元”
     for (const i of inv.items) {
       if (!("数量/单位" in i)) continue;
@@ -741,10 +779,8 @@ const FISCAL = {
       for (const k of Object.keys(head)) if (MAPPED.test(k)) delete head[k];
       if (Object.keys(head).length) inv.附加信息.unshift(head);
     }
-    const sign = {};
-    if (reviewer) sign.复核人 = reviewer;
-    if (payee) sign.收款人 = payee;
-    if (Object.keys(sign).length) inv.附加信息.push(sign);
+    inv.收款人 = valueOf(T, PAYEE_RE, null);
+    inv.复核人 = valueOf(T, REVIEWER_RE, null);
     return inv;
   },
   check(inv) {
@@ -837,9 +873,11 @@ function parseInvoicePdf(pages, attachments = []) {
   for (const [pageIndex, p] of pages.entries()) {
     const inv = parsePage(p.items, xml);
     if (!inv) continue; // 不是发票页（如清单封面）
+    if (inv.小计) inv.小计[0].页 = pageIndex + 1;
     const last = invoices[invoices.length - 1];
     if (last && (!inv.发票号码 || inv.发票号码 === last.发票号码)) {
       last.items.push(...inv.items);
+      if (inv.小计) (last.小计 ||= []).push(...inv.小计);
       for (const k of ["合计金额", "合计税额", "价税合计", "价税合计大写", "备注"]) if (inv[k] != null && inv[k] !== "") last[k] = inv[k];
       last.页数++;
     } else {
@@ -850,7 +888,7 @@ function parseInvoicePdf(pages, attachments = []) {
   for (const inv of invoices) {
     applyXml(inv, xml);
     inv.税率 = [...new Set(inv.items.map((i) => i.税率).filter(Boolean))].join("、");
-    inv.附加信息文本 = (inv.附加信息 || []).map((r) => Object.entries(r).map(([k, v]) => `${k}:${v}`).join(" ")).join("；");
+    inv.附加信息文本 = inv.附加信息.map((r) => Object.entries(r).map(([k, v]) => `${k}:${v}`).join(" ")).join("；");
     inv.issues = checkInvoice(inv);
     inv.suggestedName = suggestName(inv);
   }
@@ -862,7 +900,7 @@ function checkInvoice(inv, qr) {
   const e = expertOf(inv);
   const out = [];
   for (const k of ["发票号码", "开票日期", "价税合计", ...(e.required || [])]) if (inv[k] == null || inv[k] === "") out.push(`缺少字段：${k}`);
-  if (e.check) out.push(...e.check(inv));
+  out.push(...e.check(inv));
   out.push(...(inv.附件核对 || []));
   // 18 位税号可能是统一社会信用代码（GB 32100），个人则是身份证号（GB 11643，如收购发票的销售方）
   for (const k of ["购买方税号", "销售方税号"]) {
@@ -882,11 +920,11 @@ function checkInvoice(inv, qr) {
 
 // ======================= 二维码 =======================
 
-/** 二维码内容：01,种类代码,发票代码,发票号码,金额,开票日期(YYYYMMDD),校验码,…；不是税务发票二维码时返回 null */
+/** 二维码内容：01,种类代码,发票代码,发票号码,金额,开票日期(YYYYMMDD，个别开票方写成 YYYY-MM-DD),校验码,…；不是税务发票二维码时返回 null */
 function parseQr(text) {
   const p = (text || "").split(",");
   if (p.length < 6 || p[0] !== "01" || !/^\d{2}$/.test(p[1])) return null;
-  return { 种类代码: p[1], 发票代码: p[2].trim(), 发票号码: p[3].trim(), 金额: parseFloat(p[4]), 开票日期: p[5], 校验码: (p[6] || "").trim(), 原文: text };
+  return { 种类代码: p[1], 发票代码: p[2].trim(), 发票号码: p[3].trim(), 金额: parseFloat(p[4]), 开票日期: p[5].trim().replace(/-/g, ""), 校验码: (p[6] || "").trim(), 原文: text };
 }
 
 /** 种类代码 → 票面类型（10 / 31 / 32 / 33 / 51 / 61 已用实物验证；01 / 04 / 08 / 11 为旧版公开代码）；10 也用于各省通用电子发票 */
@@ -917,7 +955,6 @@ function applyQr(inv, qr) {
   if (!inv.发票代码 && qr.发票代码) inv.发票代码 = qr.发票代码;
   inv.issues = checkInvoice(inv, qr);
   inv.suggestedName = suggestName(inv);
-  return inv;
 }
 
 /** 显示和导出用的完整号码：发票代码 + 发票号码（旧版发票 12 + 8 位，财政票据 8 + 10 位；数电票没有代码）。解析结果里两个字段仍分开存，核对要分别用 */
@@ -964,4 +1001,4 @@ function checkWhitelist(inv, entries) {
   return entries.some((e) => e.name === name) ? [] : [`购买方不在白名单：${inv.购买方名称}（无税号）`];
 }
 
-export { parseInvoicePdf, fullNo, applyQr, checkInvoice, parseQr, parseChineseAmount, checkCreditCode, checkIdCard, parseWhitelist, checkWhitelist };
+export { parseInvoicePdf, fullNo, applyQr, parseQr, parseWhitelist, checkWhitelist };

@@ -16,12 +16,12 @@ const prepare = (items) =>
   items.map((i) => ({ s: nk(i.str).trim(), x: i.x, y: i.y, w: i.w || 0 })).filter((t) => t.s);
 
 const sameRow = (a, b, tol = 4) => Math.abs(a.y - b.y) <= tol;
-const cx = (t) => t.x + (t.w || 0) / 2;
+const cx = (t) => t.x + t.w / 2;
 
 /** 按 y 分行（容差 tol），每行按 x 排序，text 为同行文本块用 inline 连接 */
 function groupLines(tokens, tol = 4, inline = "") {
   const lines = [];
-  for (const t of tokens.slice().sort((a, b) => a.y - b.y || a.x - b.x)) {
+  for (const t of tokens.slice().sort((a, b) => a.y - b.y)) {
     const last = lines[lines.length - 1];
     if (last && Math.abs(last.y - t.y) <= tol) last.toks.push(t);
     else lines.push({ y: t.y, toks: [t] });
@@ -53,7 +53,28 @@ function normDate(s) {
   return m ? `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}` : "";
 }
 
-/** 生成合法的 PDF 文件名（“/” 改为 “&”，去掉 Windows 不允许的字符） */
-const safeFileName = (raw) => raw.replace(/\//g, "&").replace(/[\\:*?"<>|\r\n]/g, "").slice(0, 180) + ".pdf";
+/** 合法的文件名 / 文件夹名（“/” 改为 “&”，去掉 Windows 不允许的字符和首尾空格） */
+const safeName = (raw) => raw.replace(/\//g, "&").replace(/[\\:*?"<>|\r\n]/g, "").trim().slice(0, 180);
+const safeFileName = (raw) => safeName(raw) + ".pdf";
 
-export { squash, halfBrackets, round2, prepare, sameRow, cx, groupLines, joinText, toNum, normDate, safeFileName };
+/**
+ * 规范命名（网页“下载规范命名的 PDF”与 scripts/samples.js 共用）：records 为 [{file, data}]，按文件归并，
+ * 一个文件含多条记录时用第一条命名并加“_等N张”；重名加 (2)(3)…。返回 [{file, name}]
+ */
+function standardNames(records, fileName, unit) {
+  const byFile = new Map();
+  for (const { file, data } of records) {
+    const g = byFile.get(file);
+    if (g) g.n++;
+    else byFile.set(file, { data, n: 1 });
+  }
+  const used = new Map();
+  return [...byFile].map(([file, { data, n }]) => {
+    const name = n > 1 ? fileName(data).replace(/\.pdf$/, `_等${n}${unit}.pdf`) : fileName(data);
+    const k = (used.get(name) || 0) + 1;
+    used.set(name, k);
+    return { file, name: k > 1 ? name.replace(/\.pdf$/, `(${k}).pdf`) : name };
+  });
+}
+
+export { squash, halfBrackets, round2, prepare, sameRow, cx, groupLines, joinText, toNum, normDate, safeName, safeFileName, standardNames };

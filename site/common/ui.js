@@ -1,20 +1,24 @@
 /*
  * 共用：工具页面框架。各工具只提供配置（见 baoguan/app.js、fapiao/app.js）：
  *   createApp({ title, sub, icon, dropTitle, zipTitle, search, footer, unit, allLabel,
- *                     load, key, dupNote, sortKey, hay, columns, stats, detail, excel, zipName, fileName })
+ *                     load, key, dupNote, sortKey, hay, columns, stats, detail, excel, zipName, fileName, merge? })
+ * 列表默认一个解析结果一行；merge(全部解析结果) 可选，把多个文件合并成一行（如同一报关单的各单据），
+ * 返回 [{ key, data, members: [解析结果], files: [{ member, name }] }]，打包时按 files 放置（name 可含“/”，即文件夹）；
+ * merge 的第二个参数是识别不了的文件 [{ 原文件名, 错误, 无文字层 }]，并入某组的（成员的 来源 即该对象）不再单列为“无法识别”
+ * unrecognizedDir 可选：识别不了的文件也打包，放在该文件夹下、保留拖入时的原文件夹层级；不设则不打包
  * 页面骨架（标题、拖放区、工具栏、表格、页脚）由这里生成，html 只需以模块方式引入各工具的 app.js。
  * 第三方库：pdf.js、SheetJS 为 ES 模块，在这里导入；JSZip 只发布 UMD 版，由 html 用普通 <script> 加载为全局变量。
  */
 import * as pdfjsLib from "../vendor/pdfjs/pdf.min.mjs";
 import * as XLSX from "../vendor/xlsx.mjs";
 import * as DocPdf from "./pdf.js";
+import { standardNames } from "./text.js";
 
 const $ = (s) => document.querySelector(s);
 
 // ---------- 格式化 ----------
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtMoney = (v) => (v == null || v === "" ? "" : Number(v).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-const fmtDate = (d) => (/^\d{8}$/.test(d || "") ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}` : d || "");
 const dateStamp = () => new Date().toISOString().slice(0, 10).replace(/-/g, "");
 
 function friendlyError(err) {
@@ -133,13 +137,20 @@ function initFileInput(onFiles) {
     $(id).addEventListener("change", (e) => { deliver([...e.target.files]); e.target.value = ""; });
 }
 
+/** 文件在拖入 / 选择时的相对路径（含原文件夹层级）；单独拖入的文件只有文件名 */
+const relPath = (file) => file.relPath || file.webkitRelativePath || file.name;
+
 /** 读取拖入的文件夹（File and Directory Entries API：名称带 webkit 前缀，但各浏览器都已实现，http 下也可用） */
 async function readFolders(entries) {
   progress("正在读取文件夹…");
   try {
     const out = [];
     const walk = async (en) => {
-      if (en.isFile) return out.push(await new Promise((res, rej) => en.file(res, rej)));
+      if (en.isFile) {
+        const file = await new Promise((res, rej) => en.file(res, rej));
+        file.relPath = en.fullPath.replace(/^\//, ""); // 拖入的文件没有 webkitRelativePath，记下原文件夹层级
+        return out.push(file);
+      }
       const reader = en.createReader();
       for (let batch; (batch = await new Promise((res, rej) => reader.readEntries(res, rej))).length; ) for (const c of batch) await walk(c);
     };
@@ -151,11 +162,12 @@ async function readFolders(entries) {
 }
 
 // ---------- 导出 ----------
-/** sheets: [{name, rows, cols, widths}]；号码、税号是字符串，写入后为文本单元格 */
+/** sheets: [{name, rows, cols, widths, labels}]；labels 为表头显示名（缺省用字段名）；号码、税号是字符串，写入后为文本单元格 */
 function exportExcel(prefix, sheets) {
   const wb = XLSX.utils.book_new();
-  for (const { name, rows, cols, widths = {} } of sheets) {
+  for (const { name, rows, cols, widths = {}, labels = {} } of sheets) {
     const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{}], { header: cols });
+    XLSX.utils.sheet_add_aoa(ws, [cols.map((c) => labels[c] || c)], { origin: "A1" });
     ws["!cols"] = cols.map((c) => ({ wch: widths[c] || Math.max(8, Math.min(20, c.length * 2 + 2)) }));
     ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length, 1), c: cols.length - 1 } }) };
     XLSX.utils.book_append_sheet(wb, ws, name);
@@ -163,14 +175,15 @@ function exportExcel(prefix, sheets) {
   XLSX.writeFile(wb, `${prefix}_${dateStamp()}.xlsx`);
 }
 
-/** entries: [{name, file}]，重名自动加 (2)(3)… */
+/** entries: [{name, file}]；同名同文件只放一份（如同一文件夹里几份报关单共用的提单），同名不同文件加 (2)(3)… */
 async function downloadZip(entries, zipName) {
   const zip = new JSZip();
-  const used = new Map();
+  const used = new Map(); // 名称 → 已放入的文件
   for (const { name, file } of entries) {
-    const n = (used.get(name) || 0) + 1;
-    used.set(name, n);
-    zip.file(n > 1 ? name.replace(/\.pdf$/i, `(${n}).pdf`) : name, file); // 直接交给 JSZip，打包时才读取
+    const files = used.get(name) || [];
+    if (files.includes(file)) continue;
+    used.set(name, [...files, file]);
+    zip.file(files.length ? name.replace(/\.pdf$/i, `(${files.length + 1}).pdf`) : name, file); // 直接交给 JSZip，打包时才读取
   }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(await zip.generateAsync({ type: "blob" }));
@@ -187,9 +200,26 @@ function createApp(c) {
   /** 记录：{ id, fileName, file, data?, error? }；一个文件可产生多条记录（如一个 PDF 含多张发票） */
   let records = [];
   let nextId = 1;
+  /** 列表的行：不合并时即记录；合并时为 { id, fileName（各文件名）, data, files: [{ name, file }], hay } 加上出错的记录 */
+  let rows = [];
   const openIds = new Set();
   const status = (r) => (r.error ? "err" : r.data.issues.length ? "warn" : "ok");
   const ok = () => records.filter((r) => r.data);
+  function rebuild() {
+    if (!c.merge) return (rows = records);
+    const rec = new Map(ok().map((r) => [r.data, r]));
+    const failed = new Map(records.filter((r) => r.error).map((r) => [{ 原文件名: r.fileName, 错误: r.error, 无文字层: r.noText }, r]));
+    for (const [stub, r] of failed) rec.set(stub, r);
+    const recOf = (m) => rec.get(m.来源 || m);
+    const groups = c.merge(ok().map((r) => r.data), [...failed.keys()]);
+    const used = new Set(groups.flatMap((g) => g.members.map(recOf)));
+    rows = [...groups.map((g) => ({
+      id: g.key, data: g.data,
+      fileName: g.members.map((m) => recOf(m).fileName).join("、"),
+      files: g.files.map(({ member, name }) => ({ name, file: recOf(member).file })),
+      hay: g.members.map((m) => recOf(m).hay).join(" "),
+    })), ...records.filter((r) => r.error && !used.has(r))];
+  }
 
   // 排序：点列标题切换升 / 降序，默认第一列（日期）升序；无法识别的记录始终在最后
   // 取值：状态、原文件名内置；其余为列配置的第 4 项（数字按大小，文字按拼音、其中数字按数值；空值在最后）
@@ -203,7 +233,7 @@ function createApp(c) {
   function ordered() {
     const f = sorters[sort.i];
     // 排序值先算好（v：所选列，t：并列时的次序），比较时不再反复计算
-    const keyed = records.map((r) => (r.error ? { r, v: "", t: r.fileName } : { r, v: f(r), t: c.sortKey(r.data) }));
+    const keyed = rows.map((r) => (r.error ? { r, v: "", t: r.fileName } : { r, v: f(r), t: c.sortKey(r.data) }));
     keyed.sort((a, b) => {
       if (!!a.r.error !== !!b.r.error) return a.r.error ? 1 : -1;
       if (a.r.error) return cmpVal(a.t, b.t);
@@ -228,11 +258,12 @@ function createApp(c) {
           added++;
         }
       } catch (err) {
-        records.push({ id: nextId++, fileName: file.name, file, error: friendlyError(err), hay: file.name.toLowerCase() });
+        records.push({ id: nextId++, fileName: file.name, file, error: friendlyError(err), noText: err.code === "NO_TEXT", hay: file.name.toLowerCase() });
         failed++;
       }
     }
     progress("");
+    rebuild();
     render();
     const msg = [`已添加 ${added} ${c.unit}`];
     if (dup) msg.push(`跳过重复 ${dup} ${c.unit}（${c.dupNote}）`);
@@ -242,18 +273,18 @@ function createApp(c) {
   }
 
   function render() {
-    const n = records.length;
+    const n = rows.length;
     $("#result").hidden = !n;
     $("#drop").classList.toggle("compact", n > 0);
     $(".drop-title").textContent = n ? "继续添加：拖入更多文件，或" : c.dropTitle;
-    const nWarn = records.filter((r) => status(r) === "warn").length;
-    const nErr = n - ok().length;
+    const nWarn = rows.filter((r) => status(r) === "warn").length;
+    const nErr = rows.filter((r) => r.error).length;
     // 前三个框是筛选按钮（全部 / 需核对 / 无法识别），其后是各工具自己的统计，只展示
     const card = (k, v) => `<div class="k">${esc(k)}</div><div class="v" title="${esc(v)}">${esc(v)}</div>`;
     $("#stats").innerHTML =
       [["all", c.allLabel, n], ["warn", "需核对", nWarn], ["err", "无法识别", nErr]]
         .map(([f, k, cnt]) => `<button type="button" class="stat filter${f === filter ? " active" : ""}${f !== "all" && cnt ? " warn" : ""}" data-f="${f}">${card(k, `${cnt} ${c.unit}`)}</button>`).join("") +
-      c.stats(ok().map((r) => r.data)).map(([k, v]) => `<div class="stat">${card(k, v)}</div>`).join("");
+      c.stats(rows.filter((r) => r.data).map((r) => r.data)).map(([k, v]) => `<div class="stat">${card(k, v)}</div>`).join("");
 
     const q = $("#search").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const span = c.columns.length + 2;
@@ -261,20 +292,20 @@ function createApp(c) {
       th.classList.toggle("asc", i === sort.i && sort.dir > 0);
       th.classList.toggle("desc", i === sort.i && sort.dir < 0);
     });
-    const rows = [];
+    const html = [];
     for (const r of ordered()) {
       if (q.some((w) => !r.hay.includes(w)) || (filter !== "all" && status(r) !== filter)) continue;
-      const open = openIds.has(r.id);
+      const open = openIds.has(String(r.id));
       const cells = r.error ? `<td colspan="${span - 2}">${esc(r.error)}</td>`
         : c.columns.map(([, td, cls]) => `<td${cls ? ` class="${cls}"` : ""}>${td(r.data)}</td>`).join("");
-      rows.push(`<tr class="main${open ? " open" : ""}" data-id="${r.id}"><td>${BADGE[status(r)]}</td>${cells}<td class="file" title="${esc(r.fileName)}">${esc(r.fileName)}</td></tr>`);
+      html.push(`<tr class="main${open ? " open" : ""}" data-id="${esc(r.id)}"><td>${BADGE[status(r)]}</td>${cells}<td class="file" title="${esc(r.fileName)}">${esc(r.fileName)}</td></tr>`);
       if (open) {
         const body = r.error ? `<ul class="issues err"><li>${esc(r.error)}</li></ul>`
           : (r.data.issues.length ? `<ul class="issues">${r.data.issues.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : "") + c.detail(r.data);
-        rows.push(`<tr class="detail"><td colspan="${span}">${body}</td></tr>`);
+        html.push(`<tr class="detail"><td colspan="${span}">${body}</td></tr>`);
       }
     }
-    $("#table tbody").innerHTML = rows.join("") || `<tr><td colspan="${span}" class="tip">没有符合条件的记录</td></tr>`;
+    $("#table tbody").innerHTML = html.join("") || `<tr><td colspan="${span}" class="tip">没有符合条件的记录</td></tr>`;
   }
 
   initFileInput(addFiles);
@@ -282,7 +313,7 @@ function createApp(c) {
   $("#table tbody").addEventListener("click", (e) => {
     const tr = e.target.closest("tr.main");
     if (!tr) return;
-    const id = +tr.dataset.id;
+    const id = tr.dataset.id;
     openIds.has(id) ? openIds.delete(id) : openIds.add(id);
     render();
   });
@@ -300,10 +331,10 @@ function createApp(c) {
     filter = btn.dataset.f === filter ? "all" : btn.dataset.f; // 再点一次已选中的框，回到全部
     render();
   });
-  $("#btnClear").addEventListener("click", () => { records = []; openIds.clear(); filter = "all"; render(); });
+  $("#btnClear").addEventListener("click", () => { records = []; rebuild(); openIds.clear(); filter = "all"; render(); });
 
-  // 出错的 PDF 只在页面显示，不导出、不打包
-  const exportAll = () => exportExcel(c.excel.prefix, c.excel.sheets(ok().map((r) => ({ ...r.data, 原文件名: r.fileName }))));
+  // 出错的 PDF 不导出；打包见 unrecognizedDir
+  const exportAll = () => exportExcel(c.excel.prefix, c.excel.sheets(rows.filter((r) => r.data).map((r) => ({ ...r.data, 原文件名: r.fileName }))));
   $("#btnExcel").addEventListener("click", exportAll);
   $("#btnZip").addEventListener("click", async (e) => {
     const btn = e.currentTarget;
@@ -311,17 +342,8 @@ function createApp(c) {
     if (!list.length) return toast("没有可导出的文件");
     btn.disabled = true;
     try {
-      // 一个文件含多条记录时只放一份，用第一条命名
-      const byFile = new Map();
-      for (const r of list) {
-        const g = byFile.get(r.file);
-        if (g) g.n++;
-        else byFile.set(r.file, { data: r.data, n: 1 });
-      }
-      const entries = [...byFile].map(([file, { data, n }]) => {
-        const name = c.fileName(data);
-        return { file, name: n > 1 ? name.replace(/\.pdf$/, `_等${n}${c.unit}.pdf`) : name };
-      });
+      const entries = c.merge ? rows.flatMap((r) => r.files || []) : standardNames(list, c.fileName, c.unit);
+      if (c.unrecognizedDir) for (const r of rows.filter((r) => r.error)) entries.push({ name: `${c.unrecognizedDir}/${relPath(r.file)}`, file: r.file });
       await downloadZip(entries, c.zipName);
     } finally {
       btn.disabled = false;
@@ -329,7 +351,7 @@ function createApp(c) {
   });
 
   // 供调试 / 自动化测试使用
-  return { addFiles, exportExcel: exportAll, records: () => records };
+  return { addFiles, exportExcel: exportAll, records: () => records, rows: () => rows };
 }
 
 /** 详情里的“字段：值”网格 */
@@ -341,4 +363,4 @@ const itemTable = (items, cols) =>
   `<div class="items"><table><thead><tr>${cols.map(([th, , cls]) => `<th${cls ? ` class="${cls}"` : ""}>${esc(th)}</th>`).join("")}</tr></thead><tbody>${items
       .map((it, n) => `<tr>${cols.map(([, td, cls]) => `<td${cls ? ` class="${cls}"` : ""}>${td(it, n)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 
-export { createApp, loadPdf, notice, esc, fmtMoney, fmtDate, kvGrid, itemTable };
+export { createApp, loadPdf, notice, esc, fmtMoney, kvGrid, itemTable };

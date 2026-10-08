@@ -22,7 +22,7 @@ async function loadPdf(pdfjsLib, data, options) {
   }
 }
 
-/** 每页文本块 [{str, x, y, w}]，y 自上而下 */
+/** 每页文本块 [{str, x, y, w}]，坐标为页面显示方向（按页面旋转换算），y 自上而下 */
 async function extractPages(pdfDoc) {
   const pages = [];
   for (let n = 1; n <= pdfDoc.numPages; n++) {
@@ -34,7 +34,10 @@ async function extractPages(pdfDoc) {
       height: vp.height,
       items: tc.items
         .filter((i) => i.str && i.str.trim())
-        .map((i) => ({ str: i.str, x: i.transform[4], y: vp.height - i.transform[5], w: i.width })),
+        .map((i) => {
+          const [x, y] = vp.convertToViewportPoint(i.transform[4], i.transform[5]);
+          return { str: i.str, x, y, w: i.width };
+        }),
     });
   }
   return pages;
@@ -57,7 +60,7 @@ async function extractAttachments(pdfDoc) {
 /** 没有文字层（扫描件、图片转 PDF）直接报不支持 */
 function assertTextLayer(pages) {
   const chars = pages.reduce((n, p) => n + p.items.reduce((m, i) => m + i.str.replace(/\s/g, "").length, 0), 0);
-  if (chars < 20) throw new Error("不支持：PDF 没有文字层（扫描件或图片转换的 PDF）");
+  if (chars < 20) throw Object.assign(new Error("不支持：PDF 没有文字层（扫描件或图片转换的 PDF）"), { code: "NO_TEXT" }); // code 供调用方区分扫描件
 }
 
 export { loadPdf };

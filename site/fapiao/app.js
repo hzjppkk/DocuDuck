@@ -2,6 +2,7 @@
 import { OPS } from "../vendor/pdfjs/pdf.min.mjs";
 import * as U from "../common/ui.js";
 import * as P from "./parser.js";
+import { round2 } from "../common/text.js";
 
 const { esc, fmtMoney } = U;
 
@@ -19,7 +20,7 @@ const WL_NOTICE = {
 
 /** 识别发票所在页的二维码并与票面核对，不一致的写入 inv.issues；识别不到、或不是税务二维码（如财政电子票据的查验网址，没有统一格式）时不核对 */
 async function attachQr(doc, inv) {
-  const qr = P.parseQr(await decodeQr(doc, inv.pageIndex || 0));
+  const qr = P.parseQr(await decodeQr(doc, inv.pageIndex));
   if (qr) P.applyQr(inv, qr);
 }
 
@@ -48,14 +49,18 @@ const itemSummary = (items) => {
 };
 
 const FIELDS_SHOW = ["发票类型", "特定业务", "发票号码", "开票日期", "校验码", "购买方名称", "购买方税号", "购买方地址电话", "购买方开户行及账号",
-  "销售方名称", "销售方税号", "销售方地址电话", "销售方开户行及账号", "合计金额", "合计税额", "价税合计", "税率", "开票人", "备注", "附加信息文本"];
-// 发票汇总的列顺序：票据 → 销售方与金额（同网页列表）→ 购买方及其他 → 原文件名。核对结果不导出。
-// 发票号码 = 发票代码 + 发票号码（见 P.fullNo），所以没有单独的发票代码列
-const SUMMARY_COLS = ["开票日期", "发票号码", "票据类别", "发票类型", "特定业务",
-  "销售方名称", "销售方税号", "项目", "合计金额", "税率", "合计税额", "价税合计",
-  "购买方名称", "购买方税号", "备注", "附加信息", "开票人", "原文件名"];
-// 发票明细的列：最后一列为通行费发票的「车牌号」，其他非标准明细列（通行日期、财政票据的项目编码 / 标准等）不导出
-const ITEM_COLS = ["开票日期", "发票号码", "销售方名称", "行号", "项目名称", "规格型号", "单位", "数量", "单价", "金额", "税率", "税额", "原文件名", "车牌号"];
+  "销售方名称", "销售方税号", "销售方地址电话", "销售方开户行及账号", "合计金额", "合计税额", "价税合计", "税率", "开票人", "收款人", "复核人", "备注", "附加信息文本"];
+// Excel 列。金额为不含税金额（表头显示“不含税金额”），价税合计 = 金额 + 税额；核对结果不导出。
+// 发票号码 = 发票代码 + 发票号码（见 P.fullNo），所以没有单独的发票代码列。
+// 汇总表按票面从上到下（税务总局公告 2024 年第 11 号的票面要素）：票头 → 购买方 → 销售方 → 明细（单位、数量、金额、税率、税额）
+// → 价税合计 → 备注（含附加信息：特定业务信息、财政票据的其他信息）→ 开票人等，原文件名最后
+const SUMMARY_COLS = ["开票日期", "发票号码", "票据类别", "发票类型", "特定业务", "购买方名称", "购买方税号", "销售方名称", "销售方税号",
+  "项目名称", "单位", "数量", "金额", "税率", "税额", "价税合计", "备注", "开票人", "收款人", "复核人", "原文件名"];
+// 明细表：与汇总表相同次序的发票列，其后为行号、其余标准列、按票种分组的专有列（通行费；财政票据，命名见 parser.js 的 headerColumns），原文件名最后
+const ITEM_COLS = ["销售方名称", "项目名称", "数量", "单位", "金额", "税额", "价税合计", "税率", "开票日期", "发票号码",
+  "行号", "规格型号", "单价", "车牌号", "车辆类型", "通行日期起", "通行日期止", "项目编码", "标准", "备注", "原文件名"];
+const LABELS = { 金额: "不含税金额", 销售方税号: "销售方统一社会信用代码/纳税人识别号", 购买方税号: "购买方统一社会信用代码/纳税人识别号" };
+const pick = (obj, cols) => Object.fromEntries(cols.map((k) => [k, obj[k]]));
 
 // 全局入口供调试 / 自动化测试使用
 window.__invoiceApp = U.createApp({
@@ -119,17 +124,21 @@ window.__invoiceApp = U.createApp({
     sheets(list) {
       const summary = [], detail = [], issues = [];
       for (const i of list) {
-        summary.push({
-          ...Object.fromEntries(SUMMARY_COLS.filter((k) => k in i).map((k) => [k, i[k]])),
-          发票号码: P.fullNo(i), 项目: [...new Set(i.items.map((x) => x.项目名称))].join("、"), 附加信息: i.附加信息文本,
-        });
-        i.items.forEach((x, n) => detail.push({ ...x, 行号: n + 1, 开票日期: i.开票日期, 发票号码: P.fullNo(i), 销售方名称: i.销售方名称, 原文件名: i.原文件名 }));
+        const one = i.items.length === 1 ? i.items[0] : { 数量: "见发票明细" }; // 单位、数量只在只有一行明细时填
+        summary.push(pick({
+          ...i, 项目名称: [...new Set(i.items.map((x) => x.项目名称))].join("、"), 单位: one.单位, 数量: one.数量,
+          金额: i.合计金额, 税额: i.合计税额, 发票号码: P.fullNo(i), 备注: [i.备注, i.附加信息文本].filter(Boolean).join("；"),
+        }, SUMMARY_COLS));
+        i.items.forEach((x, n) => detail.push(pick({
+          ...x, 价税合计: round2(x.金额 + (x.税额 || 0)),
+          行号: n + 1, 开票日期: i.开票日期, 发票号码: P.fullNo(i), 销售方名称: i.销售方名称, 原文件名: i.原文件名,
+        }, ITEM_COLS)));
         for (const s of i.issues) issues.push({ 开票日期: i.开票日期, 发票号码: P.fullNo(i), 销售方名称: i.销售方名称, 问题: s, 原文件名: i.原文件名 });
       }
       return [
-        { name: "发票汇总", rows: summary, cols: SUMMARY_COLS, widths: { 发票号码: 24, 购买方名称: 28, 销售方名称: 28, 购买方税号: 22, 销售方税号: 22,
-          项目: 30, 备注: 30, 附加信息: 30, 原文件名: 40 } },
-        { name: "发票明细", rows: detail.map((r) => Object.fromEntries(ITEM_COLS.map((k) => [k, r[k]]))), cols: ITEM_COLS, widths: { 发票号码: 24, 销售方名称: 28, 项目名称: 30, 规格型号: 14, 原文件名: 40 } },
+        { name: "发票汇总", rows: summary, cols: SUMMARY_COLS, labels: LABELS, widths: { 发票号码: 24, 购买方名称: 28, 销售方名称: 28, 购买方税号: 22, 销售方税号: 22,
+          项目名称: 30, 备注: 40, 原文件名: 40 } },
+        { name: "发票明细", rows: detail, cols: ITEM_COLS, labels: LABELS, widths: { 发票号码: 24, 销售方名称: 28, 项目名称: 30, 规格型号: 14, 原文件名: 40 } },
         { name: "需核对", rows: issues, cols: ["开票日期", "发票号码", "销售方名称", "问题", "原文件名"], widths: { 发票号码: 24, 销售方名称: 28, 问题: 60, 原文件名: 50 } },
       ];
     },
