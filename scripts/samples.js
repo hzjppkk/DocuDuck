@@ -1,6 +1,6 @@
 /*
  * 发票样本精简（check.js 调用）：同一版式、同样情况的样本只留代表，其余移到别处（不删除），回归测试更快、覆盖面不变；保留的样本改为规范命名
- * 报关资料不精简：电子委托、提单要靠同一票货的其他单据关联，按整套保留
+ * 报关资料不精简：报关委托书、提运单要靠同一票货的其他单据关联，按整套保留
  *
  * 做法：给每个样本提取一组特征（版式 + 票面上出现的各种情况），再挑尽量少的样本，使每个特征至少被一个样本覆盖。
  *   版式：PDF 生成软件、页宽、票种（内容不同、版式相同的样本算冗余，开票方不作为依据）
@@ -12,7 +12,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { standardNames } from "../site/common/text.js";
+import { standardNames, halfBrackets } from "../site/common/text.js";
 
 /** 某个值能否在单个文字块中完整找到（忽略空格）；找不到说明票面上它被拆成了多块 */
 const inOneToken = (tokens, v) => !v || tokens.some((s) => s.includes(String(v).replace(/\s/g, "")));
@@ -34,7 +34,7 @@ const FEATURES = {
       if (its.some((i) => i.规格型号)) flags.push("有规格型号");
       if (!its.some((i) => i.单价)) flags.push("无单价");
       if (its.some((i) => (i.项目名称 || "").length > 18)) flags.push("长项目名");
-      if (inv.版式 === "增值税发票" && inv.附加信息.length) flags.push("附加信息");
+      if (["增值税发票", "旧版发票"].includes(inv.版式) && inv.附加信息.length) flags.push("附加信息");
       if (inv.附件数据) flags.push("内嵌数据");
       if (pdf.tokens.includes("/")) flags.push("表头斜杠");
       if (!inOneToken(pdf.tokens, inv.销售方名称) || !inOneToken(pdf.tokens, inv.购买方名称)) flags.push("名称拆分");
@@ -65,7 +65,7 @@ export function sampleOf(tool, pages, meta, records) {
     producer: (meta.Producer || "").slice(0, 20),
     creator: (meta.Creator || "").slice(0, 12),
     width: Math.round(pages[0].width),
-    tokens: pages.flatMap((p) => p.items.map((i) => i.str.replace(/\s/g, ""))).filter(Boolean),
+    tokens: pages.flatMap((p) => p.items.map((i) => halfBrackets(i.str.replace(/\s/g, "")))).filter(Boolean), // 括号同解析器转半角，否则含全角括号的名称恒判为拆分
   };
   return { ...FEATURES[tool](pdf, records), records };
 }

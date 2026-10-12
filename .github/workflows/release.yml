@@ -1,6 +1,6 @@
 # 手动发布：GitHub → Actions → release → Run workflow
 # 按 package-lock.json 安装第三方库并生成 site/vendor/，读取 package.json 的版本号，
-# 把 site/ 打包为 finance-tools-vX.Y.Z.zip（最高压缩），创建 vX.Y.Z 标签和 Release，说明取自 CHANGELOG.md 中对应版本的内容
+# 把 site/ 和服务端脚本（serve.py、OCR）打包为 finance-tools-vX.Y.Z.zip（最高压缩），创建 vX.Y.Z 标签和 Release，说明取自 CHANGELOG.md 中对应版本的内容
 name: release
 
 on:
@@ -27,23 +27,45 @@ jobs:
         id: v
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: 打包 site/（写入版本号，最高压缩）
+      - name: 打包 site/ 和服务端脚本（写入版本号，最高压缩）
+        # 包内：site/ 网页（静态服务器的根目录只能指向它）；scripts/ serve.py、OCR 接口、config.ini 空模板
         run: |
           V=${{ steps.v.outputs.version }}
           D="finance-tools-v$V"
-          mkdir out && cp -r site "out/$D" && cd out
+          mkdir -p "out/$D/scripts" && cp -r site "out/$D/site"
+          cp scripts/serve.py scripts/ocr_*.py "out/$D/scripts/"
+          cd out
           # 版本号：工具页由 common/ui.js 从 meta 读取显示，入口页直接写入页脚
-          find "$D" -name '*.html' -exec sed -i "s#</head>#<meta name=\"version\" content=\"v$V\">\n</head>#" {} +
-          sed -i "s#</footer>#  <p>版本 v$V</p>\n</footer>#" "$D/index.html"
-          # 购买方白名单：仓库不含（各部署自己的配置），发布包放一份只有注释的空模板
-          cat > "$D/fapiao/whitelist.ini" <<'EOF'
-          # 购买方白名单：在下方逐行填写后生效，保存为 UTF-8。
-          #
-          # 格式：每行「公司名称:统一社会信用代码」，冒号全角 / 半角均可；# 开头为注释，空行忽略。
-          # 启用后，购买方（财政票据为交款人）不在名单内、或名称与税号不对应的发票，列为「需核对」。
-          # 文件为空（只有注释也算空），或有任何一行格式不对 / 税号校验位不对时，整个白名单不生效，不校验购买方。
+          find "$D/site" -name '*.html' -exec sed -i "s#</head>#<meta name=\"version\" content=\"v$V\">\n</head>#" {} +
+          sed -i "s#</footer>#  <p>版本 v$V</p>\n</footer>#" "$D/site/index.html"
+          # 配置（发票白名单、查询白名单、OCR 密钥）：仓库不含（各部署自己的，有密钥），发布包放一份空模板
+          cat > "$D/scripts/config.ini" <<'EOF'
+          # 财务工具配置：改后重启 serve.py 生效。保存为 UTF-8。# 开头为注释。
+          # 含密钥：只放在运行 serve.py 的电脑上，不要放进 site/（site/ 对访问者可见）。
           # 升级到新版本时注意保留本文件，不要被发布包中的空模板覆盖。
 
+          [发票购买方白名单]
+          # 每行「公司名称:统一社会信用代码」，冒号全角 / 半角均可。
+          # 启用后，购买方（财政票据为交款人）不在名单内、或名称与税号不对应的发票，列为「需核对」。
+          # 为空，或有任何一行格式不对 / 税号校验位不对时，整个白名单不生效，不校验购买方。
+
+          [查询白名单]
+          # 可以使用「查询已提交」的电脑：每行一个 IP 或网段（如 192.168.1.23、192.168.1.0/24）。在服务器本机上用也要写 127.0.0.1。
+          # 不在名单内的人看不到「查询已提交」，但仍可提交，也能看到自己拖入的文件是否已提交。
+
+          [下载]
+          # 查询白名单内的人可下载服务器上的全部归档文件，下载时要输入这个密码；为空则不能下载。
+          # 下载完可选择删除服务器上的归档文件（查询清单保留）。
+          密码 =
+
+          [OCR]
+          # provider：OCR 接口，对应 scripts/ocr_<provider>.py；换接口时改这里。任何一项为空则不启用 OCR。
+          # 腾讯云：密钥在控制台「访问管理 → API 密钥」，建议用只开了 OCR 权限的子用户；region 为地域，如 ap-shanghai、ap-guangzhou
+          # 可选：qps = 10（每秒调用上限，默认 10，与接口默认限制一致；购买了更高频率时调大）
+          provider = tencent
+          secret_id =
+          secret_key =
+          region = ap-shanghai
           EOF
           zip -9 -r "../$D.zip" "$D"
 

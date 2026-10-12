@@ -9,7 +9,16 @@ const squash = (s) => nk(s).replace(/\s+/g, "");
 /** 全角括号 （）［］｛｝ → 半角；发票同一名称常混用全角 / 半角括号，统一后比对、查重才一致 */
 const HALF = { "（": "(", "）": ")", "［": "[", "］": "]", "｛": "{", "｝": "}" };
 const halfBrackets = (s) => s.replace(/[（）［］｛｝]/g, (c) => HALF[c]);
+/** 比对用：去空白、括号半角（标签、公司名称的写法差异不影响比对） */
+const compact = (s) => halfBrackets(squash(s));
 const round2 = (x) => Math.round(x * 100) / 100;
+
+/** 标签与值连成一块时（“发 票 号码：123”）取值：跳过原文开头 n 个非空白字符（n 为去空白后标签的字数） */
+function afterLabel(raw, n) {
+  let i = 0;
+  for (; i < raw.length && n > 0; i++) if (!/\s/.test(raw[i])) n--;
+  return raw.slice(i).trim();
+}
 
 /** pdf.js 文本块 {str,x,y,w} → {s,x,y,w}，去掉空白块 */
 const prepare = (items) =>
@@ -58,7 +67,7 @@ const safeName = (raw) => raw.replace(/\//g, "&").replace(/[\\:*?"<>|\r\n]/g, ""
 const safeFileName = (raw) => safeName(raw) + ".pdf";
 
 /**
- * 规范命名（网页“下载规范命名的 PDF”与 scripts/samples.js 共用）：records 为 [{file, data}]，按文件归并，
+ * 规范命名（网页“导出 PDF”与 scripts/samples.js 共用）：records 为 [{file, data}]，按文件归并，
  * 一个文件含多条记录时用第一条命名并加“_等N张”；重名加 (2)(3)…。返回 [{file, name}]
  */
 function standardNames(records, fileName, unit) {
@@ -77,4 +86,14 @@ function standardNames(records, fileName, unit) {
   });
 }
 
-export { squash, halfBrackets, round2, prepare, sameRow, cx, groupLines, joinText, toNum, normDate, safeName, safeFileName, standardNames };
+/** 一个 PDF 拆出的几页的文件名：原名（第 2 页）、原名（第 2～3 页）；idx 为页号（从 0 起） */
+const partName = (name, idx) =>
+  `${name.replace(/\.pdf$/i, "")}（第 ${idx[0] + 1}${idx.length > 1 ? `～${idx.at(-1) + 1}` : ""} 页）.pdf`;
+
+/** 名称列表的简述：前 max 个，多出的写“等N种” */
+const brief = (names, max, unit) => {
+  const u = [...new Set(names.filter(Boolean))];
+  return u.slice(0, max).join("、") + (u.length > max ? ` 等${u.length}${unit}` : "");
+};
+
+export { squash, halfBrackets, compact, afterLabel, brief, round2, prepare, sameRow, cx, groupLines, joinText, toNum, normDate, safeName, safeFileName, standardNames, partName };

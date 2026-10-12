@@ -10,26 +10,25 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadPdfFile, parseInvoices } from "./node-pdf.js";
 import { listSamples, sampleOf, prune } from "./samples.js";
-import { parseCustomsPdf, mergeDocs } from "../site/baoguan/parser.js";
+import { parseSplit, mergeDocs } from "../site/baoguan/parser.js";
 import * as P from "../site/fapiao/parser.js";
 
-const WL_FILE = path.join(import.meta.dirname, "../site/fapiao/whitelist.ini");
-const wl = P.parseWhitelist(fs.existsSync(WL_FILE) ? fs.readFileSync(WL_FILE, "utf8") : "");
+// 购买方白名单：scripts/config.ini 的 [发票购买方白名单] 一节（同 serve.py 提供给网页的内容）
+const CONFIG = path.join(import.meta.dirname, "config.ini");
+const section = (text, name) => (text.split(/^\s*\[(.+?)\]\s*$/m).find((s, i, a) => a[i - 1]?.trim() === name) || "");
+const wl = P.parseWhitelist(section(fs.existsSync(CONFIG) ? fs.readFileSync(CONFIG, "utf8") : "", "发票购买方白名单"));
 
 const TOOLS = {
   baoguan: {
-    parse: async (doc, pages, attachments, file) => [{ ...parseCustomsPdf(pages), 原文件名: path.basename(file) }],
-    merge: (docs, failed) => mergeDocs(docs, failed).map((g) => g.data),
+    // 与网页一致：合订文件按页拆成几份（parseSplit），各份的原文件名为「原名（第 n 页）」，识别不出的那份带 错误
+    parse: async (doc, pages, attachments, file) => parseSplit(pages, path.basename(file)),
+    merge: mergeDocs,
     line: (d) => `${d.归档位置} [${d.单据.map((x) => x.版式).join("、")}]${d.缺少.length && d.单据类型 === "报关单" ? ` 缺 ${d.缺少.join("、")}` : ""}`,
     unit: "份报关单（含未匹配的单据）",
   },
   fapiao: {
-    // 与网页一致：先核对二维码（会重算 issues），再在 site/fapiao/whitelist.ini 存在且格式标准时校验购买方
-    async parse(doc, pages, attachments) {
-      const invoices = await parseInvoices(doc, pages, attachments);
-      if (wl.status === "ok") for (const inv of invoices) inv.issues.push(...P.checkWhitelist(inv, wl.entries));
-      return invoices;
-    },
+    // 与网页一致：核对二维码，config.ini 的发票白名单格式标准时校验购买方
+    parse: (doc, pages, attachments) => parseInvoices(doc, pages, attachments, wl),
     line: (i) => `${i.发票类型} ${P.fullNo(i)} ${i.开票日期} ${i.销售方名称 || "-"} ¥${i.价税合计} [${i.items.length} 行]${i.二维码 ? "" : " 无税务二维码"}`,
     unit: "张发票 / 票据",
     prune: true,
@@ -38,13 +37,16 @@ const TOOLS = {
 
 async function main() {
   const [tool, dir, ...rest] = process.argv.slice(2);
-  const opt = (name) => (rest.includes(name) ? rest[rest.indexOf(name) + 1] || "" : null);
+  // 选项后面没有值、或紧跟另一个选项时为 ""（报用法错误）
+  const opt = (name) => (rest.includes(name) ? (rest[rest.indexOf(name) + 1] || "").replace(/^--.*/, "") : null);
   const jsonOut = opt("--json"), moveTo = opt("--move");
   const T = TOOLS[tool];
   if (!T || !dir || jsonOut === "" || moveTo === "" || (moveTo && !T.prune)) {
     console.error("用法: node scripts/check.js <baoguan|fapiao> <PDF目录> [--json 输出.json] [--move 移出目录（仅发票）]");
     process.exit(2);
   }
+  if (tool === "fapiao") console.log({ ok: `购买方白名单已启用（${wl.entries.length} 家）`, empty: "未配置购买方白名单（scripts/config.ini），不校验购买方",
+    invalid: `购买方白名单${wl.message}，本次不校验购买方` }[wl.status]);
   const { pdfs, others } = listSamples(dir);
   const parsed = []; // [{ file, list } | { file, error }]
   const samples = new Map(), failed = [];
@@ -59,22 +61,26 @@ async function main() {
         close();
       }
       if (T.prune) samples.set(f, sampleOf(tool, pages, meta, list));
-      parsed.push({ file: f, list });
+      // 拆出的几份里识别不出的（带 错误），同网页作为失败单列
+      for (const x of list.filter((x) => x.错误)) parsed.push({ file: path.join(path.dirname(f), x.原文件名), error: x.错误 });
+      parsed.push({ file: f, list: list.filter((x) => !x.错误) });
     } catch (e) {
       failed.push(f);
       parsed.push({ file: f, error: e.message, noText: e.code === "NO_TEXT" });
     }
   }
   // 报关资料先合并，一行对应一份报关单（来源为组内各文件）
-  // 识别不了的文件交给合并（报关资料可按文件名并入为提单），并入的不再算失败
+  // 识别不了的文件交给合并（报关资料可按文件名并入为提运单），并入的不再算失败
   const stubs = new Map(parsed.filter((p) => p.error).map((p) => [{ 原文件名: path.basename(p.file), 错误: p.error, 无文字层: p.noText }, p]));
+  const groups = T.merge ? T.merge(parsed.flatMap((p) => p.list || []), [...stubs.keys()]) : [];
   const rows = T.merge
-    ? T.merge(parsed.flatMap((p) => p.list || []), [...stubs.keys()]).map((d) => ({ file: d.单据.map((x) => x.原文件名).join("、"), d }))
+    ? groups.map(({ data: d }) => ({ file: d.单据.map((x) => x.原文件名).join("、"), d }))
     : parsed.filter((p) => p.list).flatMap((p) => p.list.map((d) => ({ file: p.file, d })));
-  const used = new Set(T.merge ? rows.flatMap(({ d }) => d.单据).map((x) => x.原文件名) : []);
+  // 并入某组的（成员的 来源 即交给合并的那个对象）按对象认，不按文件名（不同子文件夹里可能同名）
+  const used = new Set(groups.flatMap((g) => g.members.map((m) => stubs.get(m.来源))));
   const results = [];
   let nIssues = 0;
-  const unrecognized = parsed.filter((p) => p.error && !used.has(path.basename(p.file)));
+  const unrecognized = parsed.filter((p) => p.error && !used.has(p));
   for (const { file, error } of unrecognized) {
     results.push({ file, error });
     console.log(`✗ ${file}: ${error}`);

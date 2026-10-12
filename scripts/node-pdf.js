@@ -8,8 +8,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { loadPdf } from "../site/common/pdf.js";
-import { parseInvoicePdf, parseQr, applyQr } from "../site/fapiao/parser.js";
+import { loadPdf, findQr } from "../site/common/pdf.js";
+import { parseAndCheck } from "../site/fapiao/parser.js";
 
 const require = createRequire(import.meta.url);
 const pdfjs = await import(pathToFileURL(require.resolve("pdfjs-dist/legacy/build/pdf.mjs")).href);
@@ -19,35 +19,21 @@ const OPTIONS = { cMapUrl: `${dir}/cmaps/`, standardFontDataUrl: `${dir}/standar
 /** 返回 { doc, pages, attachments, close }，用完调用 close() */
 export const loadPdfFile = (file) => loadPdf(pdfjs, new Uint8Array(fs.readFileSync(file)), OPTIONS);
 
-/** 解析发票并核对二维码（同 site/fapiao/app.js 的 load，不含白名单）；二维码可能补上发票代码，影响规范命名 */
-export async function parseInvoices(doc, pages, attachments) {
-  const { invoices } = parseInvoicePdf(pages, attachments);
-  for (const inv of invoices) {
-    const qr = parseQr(await decodeQr(doc, inv.pageIndex));
-    if (qr) applyQr(inv, qr);
-  }
-  return invoices;
-}
+/** 解析发票并核对二维码、白名单（同 site/fapiao/app.js 的 load）；二维码可能补上发票代码，影响规范命名 */
+export const parseInvoices = (doc, pages, attachments, wl) =>
+  parseAndCheck(pages, attachments, (inv) => findQr(OPS, doc, inv.pageIndex, decodeImage), wl);
 
 const jsQR = require("jsqr");
 const { OPS, ImageKind } = pdfjs;
 
 /**
- * 识别某页二维码，取图方式同网页（site/fapiao/app.js 的 decodeQr）；Node 没有 OffscreenCanvas，
- * pdf.js 给的是原始像素（ImageKind：1 位灰度 / RGB / RGBA），转成 RGBA 后交给 jsQR
+ * 取图同网页（site/common/pdf.js findQr）；Node 没有 OffscreenCanvas，pdf.js 给的是原始像素
+ * （ImageKind：1 位灰度 / RGB / RGBA），转成 RGBA 后交给 jsQR
  */
-async function decodeQr(doc, pageIndex) {
-  const page = await doc.getPage(pageIndex + 1);
-  const ops = await page.getOperatorList();
-  for (const [i, fn] of ops.fnArray.entries()) {
-    if (fn !== OPS.paintImageXObject) continue;
-    const id = ops.argsArray[i][0];
-    const img = await new Promise((res) => (id.startsWith("g_") ? page.commonObjs : page.objs).get(id, res));
-    if (!img || !img.data || img.width !== img.height) continue;
-    const code = jsQR(toRgba(img), img.width, img.height, { inversionAttempts: "dontInvert" });
-    if (code && code.data) return code.data;
-  }
-  return null;
+function decodeImage(img) {
+  if (!img.data) return null;
+  const code = jsQR(toRgba(img), img.width, img.height, { inversionAttempts: "dontInvert" });
+  return code && code.data;
 }
 
 function toRgba({ width: w, height: h, kind, data }) {

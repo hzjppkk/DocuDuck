@@ -1,3 +1,4 @@
+@charset "utf-8"; /* 必须在第一行：服务器没声明编码时，浏览器可能按西欧编码读，箭头和 .doc-已提交 等中文类名会乱 */
 :root {
   --bg: #f6f7f9;
   --panel: #ffffff;
@@ -40,12 +41,13 @@ body {
   color: var(--text);
   font: 15px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
-.wrap { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
+.wrap { max-width: 1600px; margin: 0 auto; padding: 0 16px; }
 
 .top { background: var(--panel); border-bottom: 1px solid var(--border); padding: 24px 0 18px; margin-bottom: 24px; }
 .top h1 { margin: 0 0 4px; font-size: 26px; }
 .sub { margin: 0; color: var(--muted); }
 .privacy { margin: 8px 0 0; font-size: 14px; color: var(--ok); }
+.hint { margin: 4px 0 0; font-size: 14px; color: var(--muted); }
 .notice { margin: 4px 0 0; font-size: 14px; color: var(--muted); }
 .notice-icon[title] { cursor: help; }
 .notice.ok { color: var(--accent); }
@@ -72,6 +74,9 @@ body {
 .drop.compact .drop-title { font-size: 15px; font-weight: 500; margin: 0; color: var(--muted); }
 .drop.compact .progress { flex-basis: 100%; margin: 0; }
 .progress { margin: 16px 0 0; color: var(--accent); font-weight: 600; }
+
+/* hidden 属性优先：.btn 等写了 display 的元素，否则 hidden 不起作用（按钮该隐藏时仍显示） */
+[hidden] { display: none !important; }
 
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -112,14 +117,29 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 tbody tr.main { cursor: pointer; }
 tbody tr.main:hover { background: var(--row-hover); }
 tr.main.open { background: var(--accent-soft); }
-td.file { color: var(--muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 分组（如报关资料按合同号）：分组行加粗、带展开箭头，组内各行缩进 */
+tr.group { cursor: pointer; background: var(--bg); }
+tr.group:hover { background: var(--row-hover); }
+tr.group > td:first-child::before { content: "▸ "; color: var(--muted); }
+tr.group.open > td:first-child::before { content: "▾ "; }
+tr.main.child > td:first-child { padding-left: 28px; }
+#table.nofile th.file, #table.nofile td.file { display: none; }
+td.file { color: var(--muted); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nowrap { white-space: nowrap; }
+.clip { display: inline-block; max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 td.goods { min-width: 160px; }
 
 .badge { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .badge.ok { color: var(--ok); border: 1px solid currentColor; }
 .badge.warn { color: var(--warn); background: var(--warn-soft); }
 .badge.err { color: var(--err); background: var(--err-soft); }
+.badge.lack { color: var(--warn); border: 1px solid currentColor; }
+.badge.sus { color: var(--err); border: 1px solid currentColor; }
+a.open { color: inherit; text-decoration: underline dotted; }
+a.open:hover { color: var(--accent); }
+button.link { border: 0; background: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
+.doc-已提交 { color: var(--muted); }
+.doc-未提交 { color: var(--warn); text-decoration: line-through; }
 
 tr.detail > td { background: var(--bg); padding: 14px 16px 18px; }
 .issues { margin: 0 0 12px; padding: 10px 14px 10px 30px; background: var(--warn-soft); border-radius: 8px; color: var(--warn); }
@@ -151,3 +171,10 @@ tr.detail > td { background: var(--bg); padding: 14px 16px 18px; }
 .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 .home { display: inline-block; font-size: 13px; color: var(--muted); text-decoration: none; margin-bottom: 6px; }
 .home:hover { color: var(--accent); }
+
+/* 输入密码等小对话框（common/server.js askPassword） */
+dialog.ask { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); padding: 18px 20px; width: min(360px, 90vw); }
+dialog.ask::backdrop { background: rgba(0, 0, 0, 0.35); }
+dialog.ask p { margin: 0 0 10px; font-size: 14px; }
+dialog.ask input { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 14px; }
+dialog.ask .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
