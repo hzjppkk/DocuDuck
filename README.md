@@ -15,7 +15,7 @@
 需要把整理好的文件提交到局域网服务器归档时用。
 
 1. 从 [Releases](https://github.com/hzjppkk/DocuDuck/releases) 下载 zip 并解压，电脑上要装有 Python 3
-2. 运行 `python scripts/serve.py`，浏览器打开 http://127.0.0.1:8080/ （同一局域网的电脑用窗口里列出的地址）
+2. 运行 `python scripts/serve.py`，可用地址会列出，可服务器部署。
 3. 按需编辑 `scripts/config.ini`，改后重启：
 
 | 配置 | 作用 |

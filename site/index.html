@@ -25,7 +25,7 @@
   <div class="wrap">
     <h1>单据整理</h1>
     <p class="sub">把 PDF 单据拖进浏览器，自动提取信息、核对数据，一键导出 Excel 台账。</p>
-    <p class="privacy">🔒 文件在你自己的电脑上识别；只有点「提交」才上传至服务器；<span id="ocr">联网OCR功能已禁用</span>。</p>
+    <p class="privacy" id="privacy">🔒 文件在你自己的电脑上识别。</p>
   </div>
 </header>
 
@@ -56,11 +56,15 @@
   <p>只支持带文字层的 PDF；图片、OFD、XML 等其他格式会被自动排除，扫描件无法识别。</p>
 </footer>
 <script type="module">
-  fetch("api/files", { cache: "no-store" })
-    .then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.query) document.getElementById("query").hidden = false; }).catch(() => {});
-  // OCR 是否启用由 serve.py 启动时按 config.ini 的 [OCR] 判断
-  fetch("api/ocr", { cache: "no-store" })
-    .then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.enabled) document.getElementById("ocr").textContent = "联网OCR功能已启用"; }).catch(() => {});
+  // 服务器（serve.py）开了哪些联网功能：提交（[存档]）、OCR（[OCR]）；在线版、纯本地模式问不到，都不显示
+  const get = (path) => fetch(path, { cache: "no-store" }).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+  Promise.all([get("api/files"), get("api/ocr")]).then(([files, ocr]) => {
+    if (files.query) document.getElementById("query").hidden = false;
+    const notes = ["文件在你自己的电脑上识别"];
+    if (files.archive && files.writable) notes.push("只有点「提交」才上传至服务器");
+    if (ocr.enabled) notes.push("点「OCR」时该文件会发给联网 OCR 服务");
+    document.getElementById("privacy").textContent = `🔒 ${notes.join("；")}。`;
+  });
 </script>
 </body>
 </html>
