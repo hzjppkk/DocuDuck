@@ -12,12 +12,13 @@ function friendlyError(err) {
 }
 
 let toastTimer;
-function toast(msg, ms = 3500) {
+/** 底部提示，显示 5 秒 */
+function toast(msg) {
   const t = $("#toast");
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), ms);
+  toastTimer = setTimeout(() => (t.hidden = true), 5000);
 }
 /** 页头提示行（如白名单状态）；level：ok / warn / 空（灰色） */
 const notice = (msg, level = "") => {

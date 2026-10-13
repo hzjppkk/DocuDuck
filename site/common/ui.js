@@ -123,7 +123,7 @@ function skeleton(c) {
   const version = document.querySelector('meta[name="version"]')?.content; // 发布打包时写入（.github/workflows/release.yml）
   document.body.innerHTML = `
 <header class="top"><div class="wrap">
-  <!-- <a class="home" href="../index.html">← 返回首页</a> -->
+  <a class="home" href="../index.html">← 返回首页</a>
   <h1>${esc(c.title)}</h1>
   <p class="sub">${esc(c.sub)}</p>
   ${c.tip ? `<p class="hint">💡 ${esc(c.tip)}</p>` : ""}
@@ -172,7 +172,7 @@ function initFileInput(onFiles) {
   const deliver = (files, others = 0, unreadable = 0) => {
     const pdfs = files.filter((f) => /\.pdf$/i.test(f.name));
     const excluded = files.length - pdfs.length + others;
-    if (!pdfs.length) return toast(unreadable ? `有 ${unreadable} 个 PDF 读不出（可能被占用、路径过长或同步盘未下载到本地）` : excluded ? "没有找到 PDF 文件" : "没有读取到文件", 6000);
+    if (!pdfs.length) return toast(unreadable ? `有 ${unreadable} 个 PDF 读不出（可能被占用、路径过长或同步盘未下载到本地）` : excluded ? "没有找到 PDF 文件" : "没有读取到文件");
     onFiles(pdfs, excluded, unreadable);
   };
   window.addEventListener("dragover", (e) => {
@@ -406,7 +406,7 @@ function createApp(c) {
     if (failed) msg.push(`${failed} 个文件无法识别`);
     if (excluded) msg.push(`已排除 ${excluded} 个非 PDF 文件`);
     if (unreadable) msg.push(`${unreadable} 个读不出（可能被占用、路径过长或同步盘未下载到本地）`);
-    toast(msg.join("，"), 5000);
+    toast(msg.join("，"));
   }
 
   /**

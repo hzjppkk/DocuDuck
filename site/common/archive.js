@@ -152,8 +152,8 @@ function connect(c, app) {
     if (!password) return;
     const res = await fetch(DOWNLOAD_API + dirQ(dir), { method: "POST", body: JSON.stringify({ password }) }).catch(() => null);
     const j = res ? await res.json().catch(() => ({})) : {};
-    if (!res || !res.ok) return toast(j.error || "连接不到服务器", 6000);
-    if (!j.count) return toast("服务器上没有归档文件（可能已下载并删除）", 5000);
+    if (!res || !res.ok) return toast(j.error || "连接不到服务器");
+    if (!j.count) return toast("服务器上没有归档文件（可能已下载并删除）");
     const a = Object.assign(document.createElement("a"), { href: `${DOWNLOAD_API}/${j.token}`, download: "" });
     a.click();
     const size = `${(j.bytes / 1048576).toFixed(1)} MB`;
@@ -161,12 +161,12 @@ function connect(c, app) {
       progress(`正在下载 ${j.count} 个文件（${size}）…`);
       await sleep(1000);
       s = await fetch(`${DOWNLOAD_API}/${j.token}/status`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      if (!s || s.failed) return toast("下载中断，请重新下载", 6000);
+      if (!s || s.failed) return toast("下载中断，请重新下载");
       if (s.done) break;
     }
     downloaded = { token: j.token, dir, count: j.count, size };
     $("#btnPurge").disabled = false;
-    toast(`已下载 ${j.count} 个文件（${size}）；确认压缩包已保存、能正常打开后，可删除服务器上的归档文件`, 8000);
+    toast(`已下载 ${j.count} 个文件（${size}）`);
   }
 
   /** 查询页：删除最近一次下载里的归档文件（下载之后又提交过的不删，清单保留） */
@@ -174,9 +174,9 @@ function connect(c, app) {
     if (!downloaded || !confirm(`删除服务器上「${downloaded.dir}」已下载的 ${downloaded.count} 个归档文件（${downloaded.size}）？`)) return;
     const p = await fetch(PURGE_API, { method: "POST", body: JSON.stringify({ token: downloaded.token }) }).catch(() => null);
     const r = p ? await p.json().catch(() => ({})) : {};
-    if (!p || !p.ok) return toast(`删除失败：${r.error || "连接不到服务器"}`, 6000);
+    if (!p || !p.ok) return toast(`删除失败：${r.error || "连接不到服务器"}`);
     downloaded = null;
-    toast(`已删除服务器上的归档文件 ${r.deleted} 个${r.kept ? `，下载之后又提交过的 ${r.kept} 个保留` : ""}`, 6000);
+    toast(`已删除服务器上的归档文件 ${r.deleted} 个${r.kept ? `，下载之后又提交过的 ${r.kept} 个保留` : ""}`);
   }
 
   /** 单据核验页：提交当前视图的文件到它的目录 */
@@ -212,7 +212,7 @@ function connect(c, app) {
     }
     await refreshServer();
     const note = over ? `（其中覆盖 ${over} 个）` : "";
-    toast(failed.length ? `已提交 ${done} 个文件${note}，${failed.length} 个失败：${failed[0]}（详情见 F12 控制台）` : `已提交 ${done} 个文件${note}`, 8000);
+    toast(failed.length ? `已提交 ${done} 个文件${note}，${failed.length} 个失败：${failed[0]}（详情见 F12 控制台）` : `已提交 ${done} 个文件${note}`);
   }
 
   if (dirs.length) {
@@ -239,10 +239,10 @@ function connect(c, app) {
       if (!res.ok) throw new Error(j.error);
       const now = app.replace(r, c.ocr.parse(j.text, r.file));
       if (now === null) return toast("列表已清空，OCR 结果未使用");
-      toast(!now || app.status(now, app.view()) === "sus" ? "OCR 完成，仍未匹配到报关单" : "OCR 完成，已归入对应的报关单", 5000);
+      toast(!now || app.status(now, app.view()) === "sus" ? "OCR 完成，仍未匹配到报关单" : "OCR 完成，已归入对应的报关单");
     } catch (err) {
       btn.disabled = false;
-      toast(`OCR 失败：${friendlyError(err)}`, 6000);
+      toast(`OCR 失败：${friendlyError(err)}`);
     } finally {
       progress("");
     }

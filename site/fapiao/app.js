@@ -34,7 +34,7 @@ window.__app = U.createApp({
   sub: "支持发票、财政电子票据、报关单证。",
   icon: "📄",
   dropTitle: "把 PDF（或整个文件夹）拖到这里",
-  tip: "把提单的文件名改成提运单号，即可自动归入对应的报关单。",
+  tip: "把提运单文件名改成提运单号，即可自动归入对应的报关批次。",
   search: "搜索 合同号 / 海关编号 / 提运单号 / 发票号码 / 销售方 / 品名…",
   // 逐页识别、合订的按页拆开（parser.js），拆出的几份各自切出所在的页（U.withPdf）
   load: (file) => U.withPdf(file, async ({ doc, pages, attachments }) =>
