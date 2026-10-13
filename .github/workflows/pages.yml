@@ -1,0 +1,41 @@
+# 推送到 main 时把 site/ 发布到 GitHub Pages（也可在 Actions 里手动运行）
+# Pages 上没有 serve.py：纯本地模式，提交、查询、OCR、购买方白名单都不可用，识别、核对、导出照常
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: 安装第三方库（package-lock.json 锁定的版本）并生成 site/vendor/
+        run: |
+          npm ci --no-audit --no-fund
+          node scripts/vendor.js
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

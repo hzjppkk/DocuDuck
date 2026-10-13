@@ -4,15 +4,17 @@
   python scripts/serve.py                  默认（双击也是）：局域网共享，同网段的电脑可访问；只服务 site/、不列目录，端口 8080
   python scripts/serve.py --local          只供本机访问（调试用），可列目录
   python scripts/serve.py --local --port 8080 --root <目录> --no-open
+接口在网页目录（site/）旁的 api/ 下：根目录是 site/ 时为 /api/…；调试时根目录设为上级目录（如为了访问样本），为 /<到 site 的路径>/api/…
 只用 Python 标准库。显式指定 .js / .mjs / .wasm 的类型：Windows 注册表可能把 .js 映射成别的类型，模块脚本会被浏览器拒绝。
 每次请求都让浏览器向服务器确认文件是否更新（no-cache），改过代码刷新即生效。局域网模式下 PDF 仍在各自的浏览器里识别。
 
-配置：scripts/config.ini（不入库，含密钥，不能放进 site/），分四节，改后重启生效：
+配置：scripts/config.ini（不入库，含密钥，不能放进 site/），分五节，改后重启生效：
+  [存档]              switch = 1 / 0：0（默认，没有这一项时也是）为纯本地模式，提交、查询、下载接口都不可用，页面上也不显示（不写存放目录）
   [发票购买方白名单]  每行「公司名称:统一社会信用代码」，GET /api/whitelist 原样提供给发票页面
   [查询白名单]        每行一个 IP 或网段（如 192.168.1.0/24）；本机也要写（127.0.0.1）
   [下载]              密码 = …：查询白名单内的人下载服务器上的归档文件时要输入；为空时不能下载
   [OCR]               provider = tencent、secret_id、secret_key、region（可选 qps）；有空值时不启用 OCR
-提交（网页的「提交」，见 site/common/server.js）：文件存到 --store 目录（默认 finance-tools 下的 submitted/，不在 site/ 里、网页访问不到）下的 <工具目录>/。
+提交（网页的「提交」，见 site/common/archive.js）：文件存到 --store 目录（默认仓库根目录下的 submitted/，不在 site/ 里、网页访问不到）下的 <工具目录>/。
   启动时试写一次，写不进去时上传拒绝（403）。
   清单：每个工具目录一份 清单.jsonl，每提交一个文件追加一行（同一文件后写的为准），只记非敏感字段：网页给的显示字段（合同号、申报日期、
     单据类型、部分隐去的报关单号等）、大小、修改时间、提交者 IP、提交时间，下载过的再记 下载：[{ IP, 时间 }]；完整编号、归档路径只记校验值（HMAC，密钥在 --store 下的
@@ -22,12 +24,12 @@
     新文件 201；
     请求头 X-Last-Modified：原文件修改时间（毫秒），文件按它设修改时间；请求体开头是清单字段（JSON，字节数见 X-Meta-Length，
     见 manifest_entry），其后是文件
-  GET /api/files?dir=<工具目录> → { writable, query, download }：能否提交、能否查询（查询白名单内）、能否下载（再加设了密码）
+  GET /api/files → { archive, writable, query, download }：是否开启存档、能否提交、能否查询（查询白名单内）、能否下载（再加设了密码）
   POST /api/exists?dir=<工具目录>（请求体 { names: [文件名], stamps: ["大小/修改时间秒"], keys: [编号], bills: [{ 全文, 集装箱号 }] }）
     → { exists: {名称: { 大小, 修改时间 }}, stamps: [清单里有的], keys: {编号: { 校验, 类型: [已有的单据类型] }}（清单里有的）,
-        bills: [[{ 校验, 提运单号? }]] }：
-    只能问到自己手上的；bills（本地提运单属于清单里的哪几组）只给查询白名单内的
-  GET /api/manifest?dir=<工具目录>（查询白名单内）→ { entries: [清单各条] }
+        bills: [[报关单 + 提运单号?]]（本地提运单、发票属于哪几份已提交的报关单，供归档） }：
+    只能问到自己手上的单据相关的
+  GET /api/manifest?dir=<工具目录>（查询白名单内，查询页）→ { groups: [每份已提交的报关单], files: [各文件的清单字段] }
 下载（查询白名单内，且要密码）：
   POST /api/download?dir=<工具目录>（请求体 { password }）→ { token, count, bytes }：记下此刻目录里的归档文件
   GET /api/download/<token> 下载这些文件的 zip（不压缩，边打包边发送）；GET /api/download/<token>/status → { done, failed }：是否已发送完、中断
@@ -61,6 +63,7 @@ SITE = pathlib.Path(__file__).resolve().parent.parent / "site"
 STORE = SITE.parent / "submitted"
 CONFIG = pathlib.Path(__file__).resolve().parent / "config.ini"
 API = "/api/files"
+ARCHIVE_APIS = (API, "/api/exists", "/api/manifest", "/api/download", "/api/purge")  # 存档关闭时不可用（含其下的路径）
 MAX_SIZE = 100 * 1024 * 1024
 MAX_OCR_PAGES = 20
 MANIFEST = "清单.jsonl"
@@ -165,22 +168,32 @@ class Manifest:
 
     def index(self, d):
         """清单的统计，跟着同一份缓存：清单不变就复用，变了（entries 换成新的一份）才重算。
-        { stamps: {"大小/修改时间"}, types: {校验值: {单据类型}}, groups: {校验值: [提运单号, {集装箱号}, 海关编号]} }"""
+        { stamps: {"大小/修改时间"}, groups: {校验值: 一份报关单} }；一份报关单：名称（部分隐去的编号）、合同协议号、申报日期、
+        已提交 {单据类型: "提交时间 · 提交者 IP"}，以及只供比对、不发给页面的 海关编号、提运单号、集装箱号"""
         entries = self.entries(d)
         hit = self.indexes.get(d)
         if hit and hit[0] is entries:
             return hit[1]
-        idx = {"stamps": set(), "types": {}, "groups": {}}
+        idx = {"stamps": set(), "groups": {}}
         for e in entries.values():
             idx["stamps"].add(f"{e['大小']}/{e['修改时间']}")
             for g in e.get("组", []):
-                idx["types"].setdefault(g["校验"], set()).add(e.get("单据类型", ""))
-                cur = idx["groups"].setdefault(g["校验"], ["", set(), ""])
-                cur[0] = cur[0] or g.get("提运单号", "")
-                cur[1] |= set(g.get("集装箱号", []))
-                cur[2] = cur[2] or g.get("海关编号", "")
+                cur = idx["groups"].setdefault(g["校验"], {"名称": "", "合同协议号": "", "申报日期": "", "已提交": {},
+                                                          "海关编号": "", "提运单号": "", "集装箱号": set()})
+                for k in ("名称", "海关编号", "提运单号"):
+                    cur[k] = cur[k] or g.get(k, "")
+                for k in ("合同协议号", "申报日期"):
+                    cur[k] = cur[k] or e.get(k, "")
+                cur["集装箱号"] |= set(g.get("集装箱号", []))
+                cur["已提交"][e.get("单据类型", "")] = f"{e.get('提交时间', '').replace('T', ' ')} · {e.get('提交IP', '')}"
         self.indexes[d] = (entries, idx)
         return idx
+
+    @staticmethod
+    def show(h, g, who):
+        """发给页面的一份报关单：不含海关编号、提运单号、集装箱号原文；who 为假时（普通用户）不带提交时间和 IP"""
+        return {"校验": h, "名称": g["名称"], "合同协议号": g["合同协议号"], "申报日期": g["申报日期"],
+                "已提交": {t: (v if who else "") for t, v in g["已提交"].items()}}
 
     def add(self, d, *entries):
         """追加；缓存是最新的就顺手更新（另建一份，正在读旧缓存的请求不受影响），不必下次整份重读"""
@@ -208,14 +221,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     timeout = 30
     wbufsize = 256 * 1024  # 发送缓冲：下载 zip 等大响应攒够再发，不按 8 KB 一个小包发（每个请求处理完自动发出剩余的）
-    listing = True
-    store = STORE
-    manifest = None
-    can_write = False
-    ocr = None
-    allow = []
-    whitelist = ""
-    password = ""
+    # 由 main 设置：listing、store、manifest、can_write、ocr、archive、allow、whitelist、password、base（见 route）
     downloads = {}  # 下载凭据 → { dir, files: [(路径, 大小, 修改时间)], ip, time, done }
     downloads_lock = threading.Lock()
     password_lock = threading.Lock()
@@ -229,40 +235,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ip = self.client_ip()
         return any(ip in n for n in self.allow)
 
-    def do_GET(self):
+    def route(self):
+        """(接口路径, url)：根目录是 site/ 的上级时，去掉到 site/ 的前缀（base），接口路径统一为 /api/…"""
         url = urllib.parse.urlsplit(self.path)
-        if url.path == "/api/ocr":
+        path = url.path[len(self.base):] if self.base and url.path.startswith(self.base + "/api/") else url.path
+        return path, url
+
+    def closed(self, path):
+        """存档关闭时，提交、查询、下载的接口都不可用"""
+        return not self.archive and any(path == a or path.startswith(a + "/") for a in ARCHIVE_APIS)
+
+    def do_GET(self):
+        path, url = self.route()
+        if path == "/api/ocr":
             return self.reply(200, {"enabled": bool(self.ocr)})
-        if url.path == "/api/whitelist":
+        if path == "/api/whitelist":
             return self.reply(200, {"text": self.whitelist})
-        if url.path == API:
+        if self.closed(path):
+            return self.reply(200, {"archive": False}) if path == API else self.reply(404, {"error": "存档已关闭"})
+        if path == API:
             query = self.can_query()
-            return self.reply(200, {"writable": self.can_write, "query": query, "download": query and bool(self.password)})
-        if url.path == "/api/manifest":
+            return self.reply(200, {"archive": True, "writable": self.can_write, "query": query, "download": query and bool(self.password)})
+        if path == "/api/manifest":
             d = self.dir_of(url)
             if not self.can_query():
                 return self.reply(403, {"error": "不在查询白名单内"})
             if not d:
                 return self.reply(400, {"error": "目录不对"})
-            # 组里的海关编号、提运单号、集装箱号只供服务器比对（post_exists 的 bills），下载记录只留在清单里，都不发给页面
-            show = lambda e: {**{k: v for k, v in e.items() if k not in ("id", "组", "下载")}, "组": [{"名称": g.get("名称", ""), "校验": g.get("校验", "")} for g in e.get("组", [])]}
-            return self.reply(200, {"entries": [show(e) for e in self.manifest.entries(d).values()]})
-        if url.path.startswith("/api/download/"):
-            return self.get_download(url.path[len("/api/download/"):])
+            # 查询页的列表：每份报关单一条（Manifest.show，不含编号原文）；各文件的清单字段（发票视图用）
+            files = [{k: v for k, v in e.items() if k not in ("id", "组", "下载")} for e in self.manifest.entries(d).values()]
+            return self.reply(200, {"groups": [self.manifest.show(h, g, True) for h, g in self.manifest.index(d)["groups"].items()], "files": files})
+        if path.startswith("/api/download/"):
+            return self.get_download(path[len("/api/download/"):])
         return super().do_GET()
 
     def do_POST(self):
-        url = urllib.parse.urlsplit(self.path)
-        size = self.length()
+        path, url = self.route()
+        size = self.number("Content-Length") or 0
         if size > MAX_SIZE:
             return self.refuse(413, "太大")
-        if url.path == "/api/exists":
+        if self.closed(path):
+            return self.refuse(404, "存档已关闭")
+        if path == "/api/exists":
             return self.post_exists(url, size)
-        if url.path == "/api/download":
+        if path == "/api/download":
             return self.post_download(url, size)
-        if url.path == "/api/purge":
+        if path == "/api/purge":
             return self.post_purge(size)
-        if url.path != "/api/ocr":
+        if path != "/api/ocr":
             return self.refuse(404, "没有这个接口")
         if not self.ocr:
             return self.refuse(404, "未启用 OCR")
@@ -277,10 +297,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.reply(200, {"text": text})
 
     def do_PUT(self):
-        path = urllib.parse.urlsplit(self.path).path
+        path, _ = self.route()
         rel = urllib.parse.unquote(path[len(API) + 1:]) if path.startswith(API + "/") else ""
         p = self.target(rel)
-        size = self.length()
+        size = self.number("Content-Length") or 0
+        if self.closed(path):
+            return self.refuse(404, "存档已关闭")
         if not self.can_write:
             return self.refuse(403, "服务器不能写入")
         if not p or p.suffix.lower() != ".pdf" or "/" not in rel:
@@ -291,10 +313,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if len(data) != size:  # 上传到一半连接断了：不存半截文件，清单也不记
             return self.refuse(400, "上传不完整")
         # 请求体开头是清单字段（JSON，长度见 X-Meta-Length），后面是文件；放在请求头里，一份提运单属于很多报关单时会超过请求头的长度上限
-        n = self.headers.get("X-Meta-Length") or "0"
-        n = int(n) if n.isdigit() and int(n) <= len(data) else 0
+        n = min(self.number("X-Meta-Length") or 0, len(data))
         meta, data = data[:n], data[n:]
-        up = self.upload_mtime()
+        # 原文件的修改时间（X-Last-Modified，毫秒）：存下的文件沿用它，供按大小 + 修改时间认出库中已有的文件；没有时按现在
+        ms = self.number("X-Last-Modified")
+        up = ms // 1000 if ms is not None else int(time.time())
         d = self.store / rel.split("/")[0]
         st = p.stat() if p.is_file() else None
         old = self.manifest.entries(d).get(self.manifest.sign(rel))
@@ -307,9 +330,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             tmp = p.with_name(p.name + ".tmp")  # 先写临时文件再替换，中途出错不留半个文件
             tmp.write_bytes(data)
             tmp.replace(p)
-            self.keep_mtime(p)
-        if code != 409 or not old:  # 写了的追加一行（后写的为准）；没写的只给清单里没有的旧数据补记
-            self.manifest.add(d, self.manifest_entry(rel, meta, *((len(data), up) if code != 409 else cur)))
+            if ms is not None:
+                os.utime(p, ns=(p.stat().st_atime_ns, ms * 1_000_000))
+            self.manifest.add(d, self.manifest_entry(rel, meta, len(data), up))  # 追加一行，后写的为准
         self.reply(code, {"overwritten": True} if code == 200 else {})
 
     def refuse(self, code, error):
@@ -318,25 +341,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.close_connection = True
         self.reply(code, {"error": error})
 
-    def length(self):
-        """请求体长度；写错时按 0"""
-        v = self.headers.get("Content-Length") or "0"
-        return int(v) if v.isdigit() else 0
-
-    def upload_mtime(self):
-        """上传文件的修改时间（秒，取自 X-Last-Modified）；没有时按现在"""
-        try:
-            return int(self.headers.get("X-Last-Modified") or "") // 1000
-        except ValueError:
-            return int(time.time())
-
-    def keep_mtime(self, p):
-        """修改时间沿用网页传来的原文件修改时间（X-Last-Modified，毫秒），供按大小 + 修改时间认出库中已有的文件"""
-        try:
-            ms = int(self.headers.get("X-Last-Modified") or "")
-        except ValueError:
-            return
-        os.utime(p, ns=(p.stat().st_atime_ns, ms * 1_000_000))
+    def number(self, name):
+        """请求头里的非负整数；没有或写错时为 None"""
+        v = self.headers.get(name) or ""
+        return int(v) if v.isdigit() else None
 
     def manifest_entry(self, rel, meta, size, mtime):
         """清单的一条：meta（请求体开头的 JSON）为 { 字段: {名称: 文字}, 组: [{ 名称, 校验 | 已校验, 提运单号?, 集装箱号? }] }。
@@ -388,22 +396,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         strs = lambda k: [s for s in (body.get(k) if isinstance(body.get(k), list) else [])[:10000] if isinstance(s, str)]
         ok = {n: {"大小": e["大小"], "修改时间": e["修改时间"]} for n in strs("names") if (e := entries.get(self.manifest.sign(f"{d.name}/{n}")))}
         # 编号 → 清单里这份报关单已有的单据类型（不论文件名，如手动补传的）
-        keys = {k: {"校验": s, "类型": sorted(idx["types"][s])} for k in strs("keys") if (s := self.manifest.sign(k)) in idx["types"]}
-        bills = self.match_bills(idx["groups"], body.get("bills", [])[:5000]) if self.can_query() and isinstance(body.get("bills"), list) else []
+        groups = idx["groups"]
+        keys = {k: {"校验": s, "类型": sorted(groups[s]["已提交"])} for k in strs("keys") if (s := self.manifest.sign(k)) in groups}
+        bills = self.match_bills(groups, body.get("bills", [])[:5000]) if isinstance(body.get("bills"), list) else []
         self.reply(200, {"exists": ok, "stamps": sorted(set(strs("stamps")) & idx["stamps"]), "keys": keys, "bills": bills})
 
     @staticmethod
     def match_bills(groups, bills):
-        """本地提运单、数电发票 [{ 全文（数电发票为备注栏）, 集装箱号 }] → 各自属于清单里的哪几组 [[{ 校验, 提运单号? }]]。
-        同网页 parser.js 的 mentions：全文中出现了海关编号或提运单号（8 位以上），没有再按集装箱号。
-        提运单号出现在全文中的才回传号码（它本来就在这份单据里），供归档命名。groups：清单统计里的 校验值 → [提运单号, {集装箱号}, 海关编号]"""
+        """本地提运单、数电发票 [{ 全文（数电发票为备注栏）, 集装箱号 }] → 各自属于哪几份已提交的报关单 [[报关单（Manifest.show）+ 提运单号?]]，
+        供本地对不上报关单的提运单、发票归档。同网页 parser.js 的 mentions：全文中出现了海关编号或提运单号（8 位以上），没有再按集装箱号。
+        提运单号出现在全文中的才回传号码（它本来就在这份单据里），供归档命名"""
         out = []
         for b in bills:
             b = b if isinstance(b, dict) else {}
             text, boxes = str(b.get("全文", "")), {str(x) for x in (b.get("集装箱号") or [])[:50]}
-            hit = [{"校验": h, **({"提运单号": no} if len(no) >= 8 and no in text else {})}
-                   for h, (no, _, full) in groups.items() if (len(no) >= 8 and no in text) or (full and full in text)]
-            out.append(hit or [{"校验": h} for h, (_, bx, _) in groups.items() if bx & boxes])
+            billed = lambda g: len(g["提运单号"]) >= 8 and g["提运单号"] in text
+            hit = [h for h, g in groups.items() if billed(g) or (g["海关编号"] and g["海关编号"] in text)]
+            hit = hit or [h for h, g in groups.items() if g["集装箱号"] & boxes]
+            out.append([{**Manifest.show(h, groups[h], False), **({"提运单号": groups[h]["提运单号"]} if billed(groups[h]) else {})} for h in hit])
         return out
 
     # ---------- 下载与删除 ----------
@@ -433,7 +443,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             now = time.time()
             for t in [t for t, v in self.downloads.items() if now - v["time"] > DOWNLOAD_TTL]:
                 del self.downloads[t]
-            self.downloads[token] = {"dir": d, "files": files, "ip": self.client_ip(), "time": now, "done": False}
+            self.downloads[token] = {"dir": d, "files": files, "ip": self.client_ip(), "time": now, "done": False, "failed": False}
         self.reply(200, {"token": token, "count": len(files), "bytes": sum(f[1] for f in files)})
 
     def download_of(self, token):
@@ -448,7 +458,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not dl:
             return self.reply(404, {"error": "下载已失效，请重新下载"})
         if status == "status":
-            return self.reply(200, {"done": dl["done"], "failed": dl.get("failed", False)})
+            return self.reply(200, {"done": dl["done"], "failed": dl["failed"]})
         # 不压缩（PDF 本身已压缩）、边打包边发送；长度事先不知道，发完即断开连接
         name = urllib.parse.quote(f"{dl['dir'].name}_{datetime.datetime.now():%Y%m%d-%H%M}.zip")
         self.send_response(200)
@@ -468,15 +478,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             dl["failed"] = True  # 对方取消下载等
 
     def record_download(self, dl):
-        """发送完后，在清单里给这次下载的每个文件追加 下载：[{ IP, 时间 }]（下载几次记几次）；清单里没有的旧文件补一条"""
+        """发送完后，在清单里给这次下载的每个文件追加 下载：[{ IP, 时间 }]（下载几次记几次）"""
         d, entries = dl["dir"], self.manifest.entries(dl["dir"])
         rec = {"IP": str(self.client_ip()), "时间": datetime.datetime.now().isoformat(timespec="seconds")}
-        lines = []
-        for p, size, mtime in dl["files"]:
-            key = self.manifest.sign(f"{d.name}/{p.relative_to(d).as_posix()}")
-            e = entries.get(key) or {"id": key, "大小": size, "修改时间": mtime // 1_000_000_000}
-            lines.append({**e, "下载": [*e.get("下载", []), rec]})
-        self.manifest.add(d, *lines)
+        keys = (self.manifest.sign(f"{d.name}/{p.relative_to(d).as_posix()}") for p, _, _ in dl["files"])
+        self.manifest.add(d, *({**e, "下载": [*e.get("下载", []), rec]} for k in keys if (e := entries.get(k))))
 
     def post_purge(self, size):
         body = self.read_json(size, dict) or {}
@@ -551,7 +557,7 @@ def lan_ips():
 
 
 def main():
-    ap = argparse.ArgumentParser(description="财务工具本地服务")
+    ap = argparse.ArgumentParser(description="单据整理本地服务")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--root", default=str(SITE), help="服务的目录，默认 site/（局域网共享时只能是 site/）")
     ap.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
@@ -564,16 +570,22 @@ def main():
     cfg = read_config()
     ocr, allow = load_ocr(cfg.get("OCR", [])), load_allow(cfg.get("查询白名单", []))
     password = key_values(cfg.get("下载", [])).get("密码", "")
+    archive = key_values(cfg.get("存档", [])).get("switch", "0") == "1"
     store = pathlib.Path(args.store)
-    can_write = writable(store)
-    attrs = {"listing": not lan, "store": store, "manifest": Manifest(store), "can_write": can_write, "ocr": ocr, "allow": allow,
-             "whitelist": "\n".join(cfg.get("发票购买方白名单", [])), "password": password}
+    can_write = archive and writable(store)  # 存档关闭时不碰存放目录
+    root = pathlib.Path(args.root).resolve()
+    base = urllib.parse.quote("/" + SITE.relative_to(root).as_posix()) if SITE != root and SITE.is_relative_to(root) else ""
+    attrs = {"listing": not lan, "store": store, "manifest": Manifest(store) if archive else None, "can_write": can_write, "ocr": ocr,
+             "allow": allow, "whitelist": "\n".join(cfg.get("发票购买方白名单", [])), "password": password, "archive": archive, "base": base}
     handler = functools.partial(type("H", (Handler,), attrs), directory=args.root)
     with Server(("0.0.0.0" if lan else "127.0.0.1", args.port), handler) as server:
         url = f"http://127.0.0.1:{args.port}/"
         print(f"服务目录 {args.root}\n配置 {CONFIG}{'' if CONFIG.exists() else '（不存在）'}")
-        print(f"提交存放 {args.store}{'' if can_write else '（不能写入，不启用提交）'}")
-        print(f"查询白名单 {len(allow)} 条；下载{'已设密码' if password else '未设密码，不能下载'}")
+        if archive:
+            print(f"提交存放 {args.store}{'' if can_write else '（不能写入，不启用提交）'}")
+            print(f"查询白名单 {len(allow)} 条；下载{'已设密码' if password else '未设密码，不能下载'}")
+        else:
+            print("存档已关闭：纯本地模式，不提交、不查询")
         print(f"OCR {'已启用：' + ocr[0]['provider'] if ocr else '未启用（[OCR] 节没有或有空值）'}")
         print(f"本机打开 {url}")
         if lan:

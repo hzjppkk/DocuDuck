@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>财务工具</title>
+<title>单据整理</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="common/style.css">
 <style>
@@ -23,34 +23,30 @@
 <body>
 <header class="top">
   <div class="wrap">
-    <h1>财务工具</h1>
+    <h1>单据整理</h1>
     <p class="sub">把 PDF 单据拖进浏览器，自动提取信息、核对数据，一键导出 Excel 台账。</p>
-    <p class="privacy">🔒 文件在你自己的电脑上识别；只有报关资料点「提交」才上传至服务器；联网OCR功能已禁用。</p>
+    <p class="privacy">🔒 文件在你自己的电脑上识别；只有点「提交」才上传至服务器；<span id="ocr">联网OCR功能已禁用</span>。</p>
   </div>
 </header>
 
 <main class="wrap">
   <div class="tools">
     <a class="tool" href="fapiao/">
-      <div class="icon" aria-hidden="true">🧾</div>
-      <h2>发票整理</h2>
-      <p>数电发票（专票、普票、铁路 / 航空客票、机动车 / 二手车）、特定业务发票及财政电子票据</p>
+      <div class="icon" aria-hidden="true">📄</div>
+      <h2>单据核验</h2>
+      <p>发票、财政电子票据、报关单证一起拖入：报关单证按报关单归集，发票一张一行</p>
       <ul>
-        <li>提取票面全部要素和明细行</li>
-        <li>核对二维码、金额勾稽、大写金额、税号校验位</li>
-        <li>自动识别重复发票，按内容规范命名 PDF</li>
+        <li>提取票面、表头的全部字段和明细</li>
+        <li>核对二维码、金额勾稽、税号校验位；报关单各单据互相核对</li>
+        <li>按内容规范命名 PDF，提交到服务器归档</li>
       </ul>
       <span class="go">进入 →</span>
     </a>
-    <a class="tool" href="baoguan/">
-      <div class="icon" aria-hidden="true">📄</div>
-      <h2>报关资料</h2>
-      <p>报关委托书、预填单、放行通知书、提运单、出口退税联、数电发票：识别核对，按合同号 / 申报日期归档</p>
-      <ul>
-        <li>提取表头全部字段和商品明细</li>
-        <li>核对 数量 × 单价 = 总价、毛重 / 净重</li>
-        <li>按内容规范命名 PDF</li>
-      </ul>
+    <!-- 查询页：只对查询白名单内的 IP 显示（由 serve.py 判断） -->
+    <a class="tool" id="query" href="chaxun/" hidden>
+      <div class="icon" aria-hidden="true">🔍</div>
+      <h2>查询</h2>
+      <p>服务器上已提交的报关单、发票：查看、下载归档、删除归档</p>
       <span class="go">进入 →</span>
     </a>
   </div>
@@ -59,5 +55,12 @@
 <footer class="wrap foot">
   <p>只支持带文字层的 PDF；图片、OFD、XML 等其他格式会被自动排除，扫描件无法识别。</p>
 </footer>
+<script type="module">
+  fetch("api/files", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.query) document.getElementById("query").hidden = false; }).catch(() => {});
+  // OCR 是否启用由 serve.py 启动时按 config.ini 的 [OCR] 判断
+  fetch("api/ocr", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.enabled) document.getElementById("ocr").textContent = "联网OCR功能已启用"; }).catch(() => {});
+</script>
 </body>
 </html>

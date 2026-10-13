@@ -94,10 +94,23 @@ body {
 .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
 .stat .k { color: var(--muted); font-size: 13px; }
 .stat .v { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.stat.warn .v { color: var(--warn); }
-.stat.filter { font: inherit; color: inherit; text-align: left; cursor: pointer; }
-.stat.filter:hover { border-color: var(--accent); }
-.stat.filter.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+/* 一级：视图标签页（报关单 / 发票 / 无法识别） */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.tab { font: inherit; font-size: 16px; color: var(--muted); background: none; border: 0; border-bottom: 3px solid transparent;
+  margin-bottom: -1px; padding: 10px 16px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; }
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
+.tab .count, .seg .count { font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: 99px; background: var(--row-hover); color: var(--muted); font-variant-numeric: tabular-nums; }
+.tab[aria-selected="true"] .count { background: var(--accent-soft); color: var(--accent); }
+/* 二级：表格上方的单选筛选（分段按钮） */
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 10px; background: var(--panel); }
+.seg button { font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-right: 1px solid var(--border);
+  padding: 5px 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.seg button:last-child { border-right: 0; }
+.seg button:hover { background: var(--row-hover); }
+.seg button[aria-checked="true"] { background: var(--accent); color: var(--accent-text); }
+.seg .count.warn { background: var(--warn-soft); color: var(--warn); }
+.seg button[aria-checked="true"] .count { background: transparent; color: inherit; }
 
 .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
 .search {
@@ -155,6 +168,8 @@ tr.detail > td { background: var(--bg); padding: 14px 16px 18px; }
 .tip, .foot { color: var(--muted); font-size: 13px; }
 .foot { margin-top: 32px; padding-bottom: 32px; }
 .foot p { margin: 4px 0; }
+.home { display: inline-block; font-size: 13px; color: var(--muted); text-decoration: none; margin-bottom: 6px; }
+.home:hover { color: var(--accent); }
 
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
@@ -169,10 +184,8 @@ tr.detail > td { background: var(--bg); padding: 14px 16px 18px; }
 }
 
 .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
-.home { display: inline-block; font-size: 13px; color: var(--muted); text-decoration: none; margin-bottom: 6px; }
-.home:hover { color: var(--accent); }
 
-/* 输入密码等小对话框（common/server.js askPassword） */
+/* 输入密码等小对话框（common/archive.js askPassword） */
 dialog.ask { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); padding: 18px 20px; width: min(360px, 90vw); }
 dialog.ask::backdrop { background: rgba(0, 0, 0, 0.35); }
 dialog.ask p { margin: 0 0 10px; font-size: 14px; }

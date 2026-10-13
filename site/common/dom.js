@@ -1,4 +1,4 @@
-/* 共用：页面小工具（转义、金额格式、出错信息、提示、进度、按钮忙碌），ui.js、server.js 使用 */
+/* 共用：页面小工具（转义、金额格式、出错信息、提示、进度、按钮忙碌），ui.js、archive.js 使用 */
 
 const $ = (s) => document.querySelector(s);
 
@@ -19,10 +19,10 @@ function toast(msg, ms = 3500) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (t.hidden = true), ms);
 }
-/** 页头提示行（如白名单状态）；level：ok / warn / 空（灰色）；tip：鼠标移到图标上显示的内容 */
-const notice = (msg, level = "", tip = "") => {
+/** 页头提示行（如白名单状态）；level：ok / warn / 空（灰色） */
+const notice = (msg, level = "") => {
   const n = $("#notice");
-  n.innerHTML = `<span class="notice-icon"${tip ? ` title="${esc(tip)}"` : ""}>📋</span> ${esc(msg)}`;
+  n.innerHTML = `<span class="notice-icon">📋</span> ${esc(msg)}`;
   n.className = `notice ${level}`;
   n.hidden = !msg;
 };

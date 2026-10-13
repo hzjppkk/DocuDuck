@@ -8,50 +8,45 @@
  *         铁路票的退票费 / 无座、行程单的多航段（发票的情况按版式分别统计：同一种情况在不同版式里各留一份）
  * 精简不判断识别对错，须先看回归结果确认程序正确，再加 --move 执行（见 README 新增样本流程）。
  * 只保留能正确识别的样本：识别失败的 PDF（不是单据、没有文字层、文字乱码等）和非 PDF 文件一并移出（desktop.ini 等系统文件不动）。
- * 要增加判断依据，在 FEATURES 里加一条特征即可。规范命名与网页“下载规范命名的 PDF”相同（site/common/text.js 的 standardNames）。
+ * 要增加判断依据，在 featuresOf 里加一条特征即可。规范命名同网页发票视图的打包（site/common/text.js 的 standardNames），不含开票年月文件夹。
  */
 import fs from "node:fs";
 import path from "node:path";
-import { standardNames, halfBrackets } from "../site/common/text.js";
+import { standardNames, compact } from "../site/common/text.js";
 
 /** 某个值能否在单个文字块中完整找到（忽略空格）；找不到说明票面上它被拆成了多块 */
 const inOneToken = (tokens, v) => !v || tokens.some((s) => s.includes(String(v).replace(/\s/g, "")));
 
-/** 规范命名中一个文件含多条记录时的量词，同网页的 unit */
-const UNIT = { fapiao: "张" };
-
 /** 由解析结果提取特征：返回 { family: 版式（用于显示）, features: Map(特征 id → 显示名) } */
-const FEATURES = {
-  fapiao(pdf, invoices) {
-    const features = new Map();
-    let family;
-    for (const inv of invoices) {
-      family = [inv.版式, inv.发票类型, inv.特定业务, pdf.producer, pdf.creator, pdf.width].filter(Boolean).join(" | ");
-      const its = inv.items;
-      const flags = its.map((i) => `税率 ${i.税率 || "无"}`);
-      flags.push(its.length > 5 ? "多行明细" : its.length > 1 ? "少行明细" : "单行明细");
-      if (its.some((i) => i.金额 < 0)) flags.push("负数行");
-      if (its.some((i) => i.规格型号)) flags.push("有规格型号");
-      if (!its.some((i) => i.单价)) flags.push("无单价");
-      if (its.some((i) => (i.项目名称 || "").length > 18)) flags.push("长项目名");
-      if (["增值税发票", "旧版发票"].includes(inv.版式) && inv.附加信息.length) flags.push("附加信息");
-      if (inv.附件数据) flags.push("内嵌数据");
-      if (pdf.tokens.includes("/")) flags.push("表头斜杠");
-      if (!inOneToken(pdf.tokens, inv.销售方名称) || !inOneToken(pdf.tokens, inv.购买方名称)) flags.push("名称拆分");
-      if (!inOneToken(pdf.tokens, inv.销售方税号) || !inOneToken(pdf.tokens, inv.购买方税号)) flags.push("税号拆分");
-      if (!inOneToken(pdf.tokens, inv.发票号码)) flags.push("号码拆分");
-      if (inv.版式 === "铁路客票") {
-        const trip = inv.附加信息[0] || {};
-        flags.push(trip.费用类型 || "无费用类型");
-        if (trip.车厢座位 === "无座") flags.push("无座");
-      }
-      if (inv.版式 === "航空客票" && its[0] && its[0].项目名称.includes("；")) flags.push("多航段");
-      features.set(`版式#${family}`, "版式");
-      for (const f of flags) features.set(`${family}#${f}`, f);
+function featuresOf(pdf, invoices) {
+  const features = new Map();
+  let family;
+  for (const inv of invoices) {
+    family = [inv.版式, inv.发票类型, inv.特定业务, pdf.producer, pdf.creator, pdf.width].filter(Boolean).join(" | ");
+    const its = inv.items;
+    const flags = its.map((i) => `税率 ${i.税率 || "无"}`);
+    flags.push(its.length > 5 ? "多行明细" : its.length > 1 ? "少行明细" : "单行明细");
+    if (its.some((i) => i.金额 < 0)) flags.push("负数行");
+    if (its.some((i) => i.规格型号)) flags.push("有规格型号");
+    if (!its.some((i) => i.单价)) flags.push("无单价");
+    if (its.some((i) => (i.项目名称 || "").length > 18)) flags.push("长项目名");
+    if (["增值税发票", "旧版发票"].includes(inv.版式) && inv.附加信息.length) flags.push("附加信息");
+    if (inv.附件数据) flags.push("内嵌数据");
+    if (pdf.tokens.includes("/")) flags.push("表头斜杠");
+    if (!inOneToken(pdf.tokens, inv.销售方名称) || !inOneToken(pdf.tokens, inv.购买方名称)) flags.push("名称拆分");
+    if (!inOneToken(pdf.tokens, inv.销售方税号) || !inOneToken(pdf.tokens, inv.购买方税号)) flags.push("税号拆分");
+    if (!inOneToken(pdf.tokens, inv.发票号码)) flags.push("号码拆分");
+    if (inv.版式 === "铁路客票") {
+      const trip = inv.附加信息[0] || {};
+      flags.push(trip.费用类型 || "无费用类型");
+      if (trip.车厢座位 === "无座") flags.push("无座");
     }
-    return { family, features };
-  },
-};
+    if (inv.版式 === "航空客票" && its[0] && its[0].项目名称.includes("；")) flags.push("多航段");
+    features.set(`版式#${family}`, "版式");
+    for (const f of flags) features.set(`${family}#${f}`, f);
+  }
+  return { family, features };
+}
 
 /** 目录（含子文件夹）中的样本：PDF 与其他文件（desktop.ini 等系统文件除外），路径相对 dir、按路径排序 */
 export function listSamples(dir) {
@@ -60,21 +55,21 @@ export function listSamples(dir) {
 }
 
 /** 一个样本的特征；meta 为 PDF 元数据（doc.getMetadata 的 info），records 为解析结果 */
-export function sampleOf(tool, pages, meta, records) {
+export function sampleOf(pages, meta, records) {
   const pdf = {
     producer: (meta.Producer || "").slice(0, 20),
     creator: (meta.Creator || "").slice(0, 12),
     width: Math.round(pages[0].width),
-    tokens: pages.flatMap((p) => p.items.map((i) => halfBrackets(i.str.replace(/\s/g, "")))).filter(Boolean), // 括号同解析器转半角，否则含全角括号的名称恒判为拆分
+    tokens: pages.flatMap((p) => p.items.map((i) => compact(i.str))).filter(Boolean), // 同解析器规整（部首、空白、括号），否则名称恒判为拆分
   };
-  return { ...FEATURES[tool](pdf, records), records };
+  return { ...featuresOf(pdf, records), records };
 }
 
 /**
  * 挑选、预览，moveTo 非空时执行：多余的移到 moveTo，保留的改为规范命名
  * samples：Map(文件 → sampleOf 的结果)，按文件名顺序；failed：识别失败的文件；others：非 PDF 文件
  */
-export function prune({ tool, dir, samples, failed, others, moveTo }) {
+export function prune({ dir, samples, failed, others, moveTo }) {
   // 每次挑覆盖“尚未覆盖的特征”最多的样本，直到所有特征都被覆盖（并列时取文件名靠前的）
   const keep = new Set();
   const need = new Set([...samples.values()].flatMap((x) => [...x.features.keys()]));
@@ -90,7 +85,7 @@ export function prune({ tool, dir, samples, failed, others, moveTo }) {
 
   const dup = [...samples.keys()].filter((f) => !keep.has(f));
   const drop = [...dup, ...failed, ...others];
-  const renames = standardNames([...keep].flatMap((f) => samples.get(f).records.map((data) => ({ file: f, data }))), (d) => d.suggestedName, UNIT[tool])
+  const renames = standardNames([...keep].flatMap((f) => samples.get(f).records.map((data) => ({ file: f, data }))), (d) => d.suggestedName, "张")
     .filter(({ file, name }) => file !== name);
 
   console.log(`\n—— 样本精简 ——`);

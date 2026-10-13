@@ -1,7 +1,7 @@
 {
-  "name": "finance-tools",
+  "name": "docuduck",
   "version": "1.0.0",
-  "description": "财务工具（Finance Tools）：在浏览器本地解析报关单、电子发票、财政电子票据 PDF，导出 Excel 台账",
+  "description": "单据整理（DocuDuck）：在浏览器本地识别发票、财政电子票据、报关单证 PDF，导出 Excel、规范命名归档",
   "license": "GPL-2.0-only",
   "private": true,
   "type": "module",
@@ -9,8 +9,8 @@
     "vendor": "node scripts/vendor.js",
     "serve": "python scripts/serve.py",
     "serve:local": "python scripts/serve.py --local",
-    "check:baoguan": "node scripts/check.js baoguan",
-    "check:fapiao": "node scripts/check.js fapiao"
+    "check:customs": "node scripts/check.js customs",
+    "check:invoice": "node scripts/check.js invoice"
   },
   "devDependencies": {
     "jsqr": "^1.4.0",

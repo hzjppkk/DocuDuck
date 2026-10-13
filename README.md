@@ -1,44 +1,75 @@
-# 财务工具（Finance Tools）
+# 单据整理（DocuDuck）
 
-在浏览器里解析发票、财政电子票据、出口报关资料 PDF，导出 Excel，按内容重命名打包。PDF 在本机浏览器中识别；报关资料可提交到局域网服务器归档。
+把发票、财政电子票据、报关单证 PDF 拖进浏览器：自动识别、核对，导出 Excel，按内容重命名打包。文件只在你的浏览器里识别。
 
 ## 使用
 
-**运行**：`python scripts/serve.py`（开发时先生成 vendor），打开 http://127.0.0.1:8080/ 。默认供局域网访问、只服务 `site/`；`--local` 只供本机，`--store` 指定提交存放目录（默认 `submitted/`）；作为后台服务运行时不打开浏览器。需 Chrome / Edge 140+；页面用了 ES 模块和 Worker，不能双击 html 打开。Release 的 zip 含 `site/` 和 `scripts/`（serve.py、OCR、`config.ini` 空模板）。
+需 Chrome 或 Edge 140 以上，只识别带文字层的 PDF（扫描件不行）。
 
-**发票整理**：拖入 PDF 或文件夹，看明细、核对（二维码、金额勾稽、税号校验位、购买方白名单），导出 Excel，打包按内容重命名的 PDF（一个 PDF 含多张发票的按票切开）。
+### 1. 在线使用
 
-**报关资料**：
-- 同一报关单的各单据合为一行，按合同号分组；合订的 PDF 按页拆开
-- 提运单、数电发票：全文（数电发票只看备注栏）中出现某报关单的海关编号或提运单号（8 位以上）即归入，其次按集装箱号
-- 归档名「合同号/申报日期/单据类型_海关编号.pdf」；没有合同号的记为「无合同号」，识别异常的（超过 32 位或有乱码）记为「合同号异常」并提示
-- 能规范命名的都打包、提交（需核对的照常）；缺的单据可在详情里直接上传（不识别，归档名末尾加 `_手动`）
-- 提交时服务器上的同名文件修改时间更晚，或时间、大小都相同的跳过，否则覆盖
+打开 https://hzjppkk.github.io/DocuDuck/ ，把 PDF 或文件夹拖进页面即可。
 
-**服务器（serve.py）**：
-- 提交的文件存在 `--store` 下；每个工具目录有一份 `清单.jsonl`，查询、判断是否已提交都只读它。页面拿到的只有非敏感字段（合同号、申报日期、单据类型、部分隐去的海关编号、大小、时间、提交者 IP）和校验值；海关编号、提运单号、集装箱号原文只供服务器比对，不发给页面
-- 是否已提交按「报关单 + 单据类型」查清单，不论文件名；识别不了的文件按大小 + 修改时间认，库中已有的不再列出
-- 查询白名单内的人可「查询已提交」（追加服务器上的报关单，本地单据可并入）和「下载归档」（要密码；下载完可删除服务器上的归档文件，清单保留）
-- 疑似提运单的「OCR」调用 `scripts/ocr_<provider>.py`，换接口只换这个文件
+### 2. 本地部署
 
-**配置** `scripts/config.ini`（不入库，含密钥，改后重启 serve.py）：`[发票购买方白名单]` 每行 `公司名称:统一社会信用代码`；`[查询白名单]` 每行一个 IP 或网段（本机也要写 127.0.0.1）；`[下载]` `密码 = …`，为空不能下载；`[OCR]` 接口和密钥。存放目录下的 `.清单密钥`（首次运行生成）换版本、迁移时要连同提交的文件一起保留。
+需要把整理好的文件提交到局域网服务器归档时用。
+
+1. 从 [Releases](https://github.com/hzjppkk/DocuDuck/releases) 下载 zip 并解压，电脑上要装有 Python 3
+2. 运行 `python scripts/serve.py`，浏览器打开 http://127.0.0.1:8080/ （同一局域网的电脑用窗口里列出的地址）
+3. 按需编辑 `scripts/config.ini`，改后重启：
+
+| 配置 | 作用 |
+|---|---|
+| `[存档]` `switch = 1` | 开启提交和查询（默认 0：和在线版一样，纯本地） |
+| `[查询白名单]` | 能进查询页的 IP 或网段，每行一个（本机写 127.0.0.1） |
+| `[下载]` `密码 = …` | 查询页下载归档的密码，为空不能下载 |
+| `[发票购买方白名单]` | 每行 `公司名称:统一社会信用代码`，不在名单内的发票标为需核对 |
+| `[OCR]` | 扫描的提运单用 OCR 识别，填接口和密钥 |
+
+提交的文件存在 `submitted/`，迁移时连同其中的 `.清单密钥` 一起备份。
+
+## 功能
+
+- **报关单**：同一报关单的退税联、预填单、放行通知书、委托书、提运单、货代发票合为一行，互相核对，按「合同号/申报日期/单据类型_海关编号.pdf」归档
+- **发票**：核对二维码、金额、税号、购买方白名单，按「开票年月/开票日期_销售方_金额_号码.pdf」命名
+- **查询**（本地部署）：查看服务器上已提交的报关单、发票，输入密码下载归档
 
 ## 结构
 
 ```
-site/                 网站源码，Release 即其构建结果
-  index.html          入口页
-  common/             text.js 文本块工具 · pdf.js 读取 PDF、切页、取二维码图片 · ui.js 页面框架（createApp、withPdf）
-                      server.js 与 serve.py 交互 · pool.js 并发 · dom.js 页面小工具 · style.css
-  fapiao/             发票：index.html · parser.js 解析 · app.js 页面配置
-  baoguan/            报关资料：index.html · parser.js · app.js
-  vendor/             第三方库，不入库，由 scripts/vendor.js 原样复制生成
-scripts/              serve.py · ocr_tencent.py · vendor.js · check.js 回归测试与样本精简 · samples.js 精简规则 · node-pdf.js
+site/                     网站源码，Release 即其构建结果
+  index.html              入口页：单据核验；查询（只对查询白名单显示）
+  common/
+    ui.js                 页面框架 createApp：拖入、识别、视图标签页、筛选、表格、详情、导出 Excel / PDF
+    archive.js            存档（与 serve.py 交互）：已提交、提交、归属、OCR；查询页的列出、下载、删除
+    pdf.js                打开 PDF、提取带坐标的文字、内嵌附件、切页、取二维码图片（浏览器与 Node 共用）
+    text.js               文本块规整与工具：prepare、squash、日期、数字、规范命名（浏览器与 Node 共用）
+    pool.js               并发识别（THREADS）
+    dom.js                页面小工具：转义、金额、提示、进度
+    style.css             样式
+  fapiao/                 单据核验
+    parser.js             专家列表（排定顺序）、逐页识别一次、按单据拆分
+    invoice.js            发票专家，及发票的解析、核对（金额、税号、二维码、附件数据、白名单）、命名
+    customs.js            报关单证专家，及按报关单归集（mergeDocs）、提交与清单字段
+    views.js              视图：报关单、发票、无法识别（列、详情、筛选、Excel、提交目录）
+    app.js                页面配置：白名单、二维码解码、视图
+  chaxun/                 查询页（只读）：index.html · app.js（沿用 fapiao/views.js）
+  baoguan/index.html      只留跳转到 fapiao/（旧网址）
+  vendor/                 第三方库，不入库，由 scripts/vendor.js 生成
+scripts/
+  serve.py                本地 / 局域网服务：静态文件、提交、清单、查询、下载、OCR
+  ocr_tencent.py          OCR 接口（腾讯云）
+  config.ini              配置（不入库）
+  check.js                回归测试与样本精简
+  samples.js              样本精简规则
+  node-pdf.js             Node 读取 PDF、取二维码（check.js 用）
+  vendor.js               从 node_modules 生成 site/vendor/
 .github/workflows/release.yml   手动发布：生成 vendor、写版本号、生成 config.ini 模板、打包
+.github/workflows/pages.yml     推送到 main 时把 site/ 发布到 GitHub Pages
 ```
 
-- 浏览器和 Node 共用 `parser.js`、`common/text.js`、`common/pdf.js`；`parser.js` 不依赖 DOM
-- 新增单据：在 `site/xxx/`（目录名用拼音）下放 `index.html`（复制 `baoguan/index.html` 改标题）、`parser.js`、`app.js`（只写 `createApp` 配置），入口页加链接
+- 浏览器和 Node 共用 `fapiao/` 的解析（invoice.js、customs.js、parser.js）、`common/text.js`、`common/pdf.js`；解析不依赖 DOM
+- 新增单据：专家写进 invoice.js 或 customs.js，parser.js 的专家列表按顺序加入；要单独列出的加一个视图（views.js）
 - 依赖由 `package-lock.json` 锁定；升级后重新生成 vendor，并跑回归测试
 
 脚本（先 `npm install`）：
@@ -46,8 +77,8 @@ scripts/              serve.py · ocr_tencent.py · vendor.js · check.js 回归
 | 命令 | 作用 |
 |---|---|
 | `node scripts/vendor.js` | 生成 `site/vendor/` |
-| `node scripts/check.js fapiao <目录>` | 回归测试（报关资料用 `baoguan`，含子文件夹），发票末尾预览样本精简 |
-| `node scripts/check.js fapiao <目录> --move <目录>` | 同上，并执行精简：移出冗余和失败的样本，保留的改为规范命名 |
+| `node scripts/check.js invoice <目录>` | 回归测试（报关资料用 `customs`，含子文件夹），发票末尾预览样本精简 |
+| `node scripts/check.js invoice <目录> --move <目录>` | 同上，并执行精简：移出冗余和失败的样本，保留的改为规范命名 |
 
 新增样本流程：加样本 → 跑回归、修程序 → 程序正确后加 `--move` 精简（精简不判断对错）。报关资料按整套保留，不精简。
 
@@ -61,6 +92,7 @@ scripts/              serve.py · ocr_tencent.py · vendor.js · check.js 回归
 - **并发与缓存**：同时识别 2 个文件（`common/pool.js` 的 `THREADS`，再多不再变快；页面地址加 `?threads=1` 即逐个处理），各用一个常驻的 pdf.js Worker；识别规则在主线程，结果按原顺序收进列表。CMap、标准字体页面只下载一次（pdf.js 默认每个 PDF 重新下载，经网络批量识别时会卡住）
 - **附件数据**：PDF 内嵌的结构化数据（铁路、航空客票的 XBRL，财政电子票据的 XML）比票面可靠，以它为准、不一致时提示；附件里的完整证件号不取
 - **二维码**：直接取 PDF 内嵌图片识别，不渲染页面。用到了 pdf.js 未公开的 `page.objs`，所以锁定大版本，升级须回归测试
+- **存档**：每个目录一份 `清单.jsonl`，查询、判断是否已提交只读它；只存非敏感字段和校验值，海关编号、提运单号、集装箱号原文只在服务器上比对，不发给页面
 - **报关资料**：提运单格式各异，不取字段，只用于关联。归档按合同号、申报日期分文件夹（各单据都有且不变），文件名带海关编号区分同一天的多份
 - 参考：购销方区域提取参考 [sanluan/einvoice](https://github.com/sanluan/einvoice)；大写金额解析改写自 [erma0/fapiao-print](https://github.com/erma0/fapiao-print)（MIT）
 

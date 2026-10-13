@@ -1,13 +1,13 @@
 /*
- * 出口报关资料解析：一个 PDF 一份单据（几种单据合订的按页拆开，见 parseSplit）。一种版式一个专家（识别 + 解析），
- * 各类单据一节、专家就近定义，在 EXPERTS 里排定匹配顺序；结果记下 单据类型 和 版式
+ * 报关单证解析与按报关单归集。一种版式一个专家（识别 + 解析），各类单据一节、专家就近定义；
+ * 与发票专家合成一组、在 parser.js 排定顺序逐页识别；结果记下 单据类型 和 版式
  *   出口退税联：报关单出口退税联（JG09 打印版），含商品明细
  *   预填单：报关行发来的报关单（多为“仅供核对用”），三种版式，其一整页旋转 90°（坐标已按页面旋转换算，见 common/pdf.js）
  *   放行通知书：通关无纸化出口（查验 /）放行通知书，三种版式
  *   报关委托书：代理报关委托书（电子），票面只有数值、标签是图片，按固定模板的位置取值，两种模板；
  *     另有纸质的委托报关协议（标签是文字，背面通用条款为第 2 页）
  *   提运单：海运提单、空运单、电放件、陆运运单等，格式各异，只用于关联：在全文里找同批报关单的提运单号，找不到再比对集装箱号
- *   数电发票：货代、报关行开的数电发票（由发票工具解析），只用于关联：备注里的提运单号或报关单号
+ *   数电发票：货代、报关行开的数电发票（发票专家识别，见 invoice.js），只用于关联：备注里的提运单号或报关单号
  * 合并（mergeDocs）：同一报关单的单据合为一组（网页一行）。报关委托书、提运单没有合同号，按报关单号 / 提运单号 / 集装箱号
  *   并入同批的报关单类单据（退税联、预填单、放行通知书），合并字段并核对是否一致；归档路径“合同号/申报日期/单据类型_报关单号.pdf”，
  *   同一天同一合同的多份报关单在同一文件夹
@@ -16,9 +16,8 @@
  * 输出：{ 单据类型, 版式, header, items, totals, 集装箱号, issues }
  */
 import * as X from "../common/text.js";
-import { parseInvoicePdf } from "../fapiao/parser.js";
 
-const { prepare, round2, normDate, squash, compact } = X;
+const { round2, normDate, squash, compact } = X;
 
 // ======================= 共用 =======================
 
@@ -117,7 +116,6 @@ function parseRefundCopy(P) {
   const bySeq = new Map();
   for (const T of P) for (const it of parseItems(T)) if (!bySeq.has(it.序号)) bySeq.set(it.序号, it);
   const items = [...bySeq.values()].sort((a, b) => a.序号 - b.序号);
-  header.页数 = P.length;
   const decl = { header, items, totals: currencyTotals(items) };
   decl.issues = checkDeclaration(decl);
   return decl;
@@ -230,14 +228,14 @@ function parseCells(T) {
   return finishHeader(T, header);
 }
 
-const REFUND = { type: "出口退税联", name: "出口退税联（JG09）", match: (text) => /出口退税联/.test(text) && /出口货物报关单/.test(text), parse: parseRefundCopy };
+const REFUND = { type: "出口退税联", name: "出口退税联（JG09）", match: ({ text }) => /出口退税联/.test(text) && /出口货物报关单/.test(text), parse: parseRefundCopy };
 // 预填单、放行通知书只有表头
 // Crystal 版：“出口查验 / 放行通知书”，标签为经营单位、发货单位、贸易方式，值在标签右侧或下方
-const RELEASE_CRYSTAL = { type: "放行通知书", name: "放行通知书（Crystal）", match: (text, T) => /放行通知书/.test(text) && hasTok(T, "经营单位"),
+const RELEASE_CRYSTAL = { type: "放行通知书", name: "放行通知书（Crystal）", match: ({ text, T }) => /放行通知书/.test(text) && hasTok(T, "经营单位"),
   parse: (P) => blank({ header: parseCells(P[0]) }) };
-const RELEASE = { type: "放行通知书", name: "放行通知书", match: (text) => /放行通知书/.test(text), parse: (P) => blank({ header: parseGrid(P[0]) }) };
+const RELEASE = { type: "放行通知书", name: "放行通知书", match: ({ text }) => /放行通知书/.test(text), parse: (P) => blank({ header: parseGrid(P[0]) }) };
 // 报关行的预填单：多数印“仅供核对用”，Crystal 版没有；有一种整页旋转 90°（坐标已换算），取值方式相同
-const PREFILL = { type: "预填单", name: "预填单", match: (text) => /出口货物报关单/.test(text), parse: (P) => blank({ header: parseGrid(P[0]) }) };
+const PREFILL = { type: "预填单", name: "预填单", match: ({ text }) => /出口货物报关单/.test(text), parse: (P) => blank({ header: parseGrid(P[0]) }) };
 
 // ======================= 报关委托书：电子委托、纸质委托报关协议 =======================
 
@@ -274,7 +272,7 @@ function parseEntrust(P, tpl) {
 
 // 纸质的委托报关协议（中国报关协会监制）：标签是文字，左栏委托方、右栏被委托方，值在标签右侧，可能折行（到下一个标签为止）；
 // 有的文件标签和值挨得近，读出来是一块（“*报关单编号 No.0000…”），标签后面的部分也是值。
-// 第 2 页为背面的通用条款，拆分合订文件时跟着第 1 页（见 parseSplit 的 CONTINUED）
+// 第 2 页为背面的通用条款，拆分合订文件时跟着第 1 页（见 isContinued）
 const PAPER_ENTRUST = [["委托方", "委托方"], ["主要货物名称", "主要货物名称"], ["HS编码", "HS编码"], ["进/出口日期", "进出口日期"],
   ["提(运)单号", "提单号"], ["贸易方式", "贸易方式"], ["数(重)量", "数（重）量"], ["包装情况", "包装情况"], ["原产地/货源", "原产地/货源地"],
   ["地(地区)", null], ["其它要求", null], ["被委托方", "被委托方"], ["*报关单编号", "报关单编码"], ["收到单证日期", "收到单证日期"],
@@ -308,20 +306,20 @@ const imageForm = (text, T) => T.length < 60 && T.some((t) => /^\d{18}$/.test(t.
 const hasHs = (T) => T.some((t) => /^\d{10}$/.test(t.s));
 const isEntrust = (text, T) => imageForm(text, T) && hasHs(T);
 
-const ENTRUST_TICK_X = { type: "报关委托书", name: "电子委托（勾选框）", match: (text, T) => isEntrust(text, T) && hasTok(T, "√"), parse: (P) => parseEntrust(P, ENTRUST_TICK) };
-const ENTRUST_STD_X = { type: "报关委托书", name: "电子委托", match: isEntrust, parse: (P) => parseEntrust(P, ENTRUST_STD) };
-const ENTRUST_PAPER = { type: "报关委托书", name: "委托报关协议（纸质）", match: (text, T) => hasTok(T, "委托报关协议"), parse: parsePaperEntrust };
+const ENTRUST_TICK_X = { type: "报关委托书", name: "电子委托（勾选框）", match: ({ text, T }) => isEntrust(text, T) && hasTok(T, "√"), parse: (P) => parseEntrust(P, ENTRUST_TICK) };
+const ENTRUST_STD_X = { type: "报关委托书", name: "电子委托", match: ({ text, T }) => isEntrust(text, T), parse: (P) => parseEntrust(P, ENTRUST_STD) };
+const ENTRUST_PAPER = { type: "报关委托书", name: "委托报关协议（纸质）", match: ({ T }) => hasTok(T, "委托报关协议"), parse: parsePaperEntrust };
 
 // ======================= 提运单 =======================
-// 格式各异，不取字段，只留去掉空格和符号的全文用于关联（集装箱号由 parseCustomsPdf 统一提取）
+// 格式各异，不取字段，只留去掉空格和符号的全文用于关联（集装箱号由 parseCustoms 统一提取）
 
 const parseBill = (P) => blank({ 全文: normNo(P.flatMap((T) => T.map((t) => t.s)).join(" ")) });
 
-const LAND_WAYBILL = { type: "提运单", name: "陆运运单", match: (text, T) => imageForm(text, T) && !hasHs(T) && !/名称/.test(text), parse: parseBill };
+const LAND_WAYBILL = { type: "提运单", name: "陆运运单", match: ({ text, T }) => imageForm(text, T) && !hasHs(T) && !/名称/.test(text), parse: parseBill };
 // 有的提单栏目名是图片，只能靠“SHIPPED ON BOARD”、空运单的“N.V.D.”（未声明价值）等正文识别；船公司格式有 Shipper、Consignee 栏
 // 货运险保险单正文也提到 B/L，排除
 const BILL = { type: "提运单", name: "提运单",
-  match: (text) => !/INSURANCE POLICY|保险单/i.test(text) && (/B\/L|BILL OF LADING|AIR WAYBILL|SHIPPED ON BOARD|N\.V\.D\./i.test(text) || (/SHIPPER/i.test(text) && /CONSIGNEE/i.test(text))),
+  match: ({ text }) => !/INSURANCE POLICY|保险单/i.test(text) && (/B\/L|BILL OF LADING|AIR WAYBILL|SHIPPED ON BOARD|N\.V\.D\./i.test(text) || (/SHIPPER/i.test(text) && /CONSIGNEE/i.test(text))),
   parse: parseBill };
 
 /** OCR 得到的提单文字（不分栏目）：同 parseBill 只用于关联；OCR 常把集装箱号的字母和数字断开（“ABCU 1234567”），先接上 */
@@ -331,74 +329,47 @@ function parseOcrBill(text) {
 }
 
 // ======================= 数电发票 =======================
-// 货代、报关行开的增值税发票（代理运费、港杂费等），由发票工具解析（fapiao/parser.js）；只用于关联：
-// 备注里常写提单号或报关单号，按同提运单的规则关联（mentions），只看备注栏
+// 货代、报关行开的数电发票由发票专家识别（invoice.js），是发票记录（类别 发票）；报关单视图里只用备注关联（mentions），
+// 对不上报关单的只在发票视图，不算问题
 
 /** 备注规整后的全文（同提运单的 全文）；“ABCD1901/02”是两票的简写，先展开为 ABCD1901 ABCD1902（后一个原文里没有完整出现） */
 const remarkText = (text) =>
   normNo((text || "").toUpperCase().replace(/([A-Z0-9]+)\/(\d{1,4})(?![0-9])/g, (m, a, b) => `${a} ${a.slice(0, -b.length)}${b}`));
 
-function parseInvoiceDoc(pages) {
-  const [inv] = parseInvoicePdf(pages).invoices;
-  return blank({ 发票号码: inv.发票号码, 开票日期: inv.开票日期, 销售方名称: inv.销售方名称, 价税合计: inv.价税合计,
-    项目: inv.items.map((i) => i.项目名称).join("、"), 备注: inv.备注 || "", 全文: remarkText(inv.备注) });
+const isInvoice = (d) => d.类别 === "发票" && /^电子发票\(/.test(d.发票类型 || ""); // 数电发票（旧版、财政票据等不参与报关）
+const invoiceDocs = new WeakMap();
+/**
+ * 发票记录 → 报关单视图里的附属单据：只用于关联和归档命名，不带发票自己的核对结果（白名单、二维码等只在发票视图）；
+ * 来源 即发票记录（页面据此找到文件）。同一张发票始终是同一个对象
+ */
+function invoiceDoc(inv) {
+  if (!invoiceDocs.has(inv))
+    invoiceDocs.set(inv, blank({ 单据类型: "数电发票", 版式: "数电发票", 发票号码: inv.发票号码, 原文件名: inv.原文件名, 来源: inv,
+      全文: remarkText(inv.备注), 集装箱号: [], 自身提示: [] }));
+  return invoiceDocs.get(inv);
 }
 
-// 只认标题为“电子发票(…)”的数电发票
-const INVOICE = { type: "数电发票", name: "数电发票", match: (text) => /电子发票/.test(squash(text)) && /发票号码/.test(squash(text)), parse: (P, pages) => parseInvoiceDoc(pages) };
+// ======================= 识别 =======================
+// 专家：match({ text: 首页文字, T: 首页文本块 })，parse(各页文本块)；顺序和逐页识别在 parser.js（与发票专家合成一组）
 
-// ======================= 识别与拆分 =======================
-
-/**
- * 专家按顺序匹配，第一个认领的负责解析：match(首页文字, 首页文本块)，parse(各页文本块, 原始页)。特征明确的在前：
- * - 发票最前：不会误认别的单据；而备注里常写提单号（有时是英文 B/L），排在后面会被提单专家认走
- * - 退税联、放行通知书在预填单前（预填单只认“出口货物报关单”字样，较宽）；Crystal 版放行通知书、勾选框的电子委托在各自的通用版前
- * - 提运单最宽松，放最后
- */
-const EXPERTS = [INVOICE, REFUND, RELEASE_CRYSTAL, RELEASE, PREFILL, ENTRUST_TICK_X, ENTRUST_STD_X, ENTRUST_PAPER, LAND_WAYBILL, BILL];
 /** 同一报关单的单据合并时的优先顺序（前者优先）：退税联是海关放行后打印的，最权威 */
 const TYPE_ORDER = ["出口退税联", "预填单", "放行通知书", "报关委托书", "提运单", "数电发票"];
 
-/** 解析一个 PDF，返回一份单据；识别不出时抛错 */
-function parseCustomsPdf(pages) {
-  const P = pages.map((p) => prepare(p.items));
-  const text = P[0].map((t) => t.s).join("");
-  const e = EXPERTS.find((x) => x.match(text, P[0]));
-  if (!e) throw new Error("不是可识别的报关资料（报关委托书、预填单、放行通知书、提运单、出口退税联、数电发票）");
-  const doc = { 单据类型: e.type, 版式: e.name, ...e.parse(P, pages) };
+/** 一页的识别上下文 { T, text（各块直接连接，块内空格保留） }；T 为通用规整后的文本块（common/text.js prepare） */
+function pageContext(T) {
+  return { T, text: T.map((t) => t.s).join("") };
+}
+
+/** 解析一份报关单证（一页或连续几页）：e 为首页认出的专家，P 为各页文本块 */
+function parseCustoms(e, P) {
+  const doc = { 单据类型: e.type, 版式: e.name, ...e.parse(P) };
   doc.集装箱号 = [...new Set(P.flatMap((T) => T.map((t) => t.s)).join(" ").match(CONTAINER_RE) || [])];
   doc.自身提示 = doc.issues;
   return doc;
 }
 
-const CONTINUED = /委托报关协议通用条款/; // 这些页是前一份的续页（背面条款等），拆分时跟着前一份
-const tryParse = (pages) => {
-  try {
-    return parseCustomsPdf(pages);
-  } catch (e) {
-    return { 错误: e.message };
-  }
-};
-
-/**
- * 解析一个 PDF，合订的（如预填单、提单、放行通知书合成一个 PDF）按页拆开：逐页识别，相邻的类型和报关单号都相同的页为同一份
- * （多页提单、多页退税联），连续识别不出的页也合为一份。识别出两份以上才拆（提单 + 续页、只有一页被误认的保险单等不拆）。
- * 返回 [单据]：拆出的各份带 页（页号，从 0 起）、原文件名为「原名（第 n 页）」，识别不出的那份为 { 错误, 原文件名, 页 }；
- * 不拆时同 parseCustomsPdf（识别不出抛错）。只有一页的份直接用逐页识别的结果，不再解析
- */
-function parseSplit(pages, name) {
-  const whole = () => [{ ...parseCustomsPdf(pages), 原文件名: name }];
-  if (pages.length < 2) return whole();
-  const segs = [];
-  pages.forEach((p, i) => {
-    const d = CONTINUED.test(p.items.map((t) => t.str).join("")) ? null : tryParse([p]);
-    const key = !d ? "续页" : d.错误 ? null : `${d.单据类型}#${d.header.海关编号 || d.发票号码 || ""}`;
-    if (segs.length && (key === "续页" || segs.at(-1).key === key)) segs.at(-1).页.push(i);
-    else segs.push({ key, 页: [i], d });
-  });
-  if (segs.filter((s) => s.key).length < 2) return whole();
-  return segs.map(({ 页, d }) => ({ ...(页.length === 1 && d ? d : tryParse(页.map((i) => pages[i]))), 原文件名: X.partName(name, 页), 页 }));
-}
+/** 前一份的续页（委托报关协议背面的通用条款等），拆分合订文件时跟着前一份（见 parser.js） */
+const isContinued = (page) => /委托报关协议通用条款/.test(page.items.map((t) => t.str).join(""));
 
 // ======================= 合并 =======================
 
@@ -438,7 +409,10 @@ const billNo = (d) => {
  *   组里没有本地文件的，members 为空
  * 会改写每份单据的 issues（自身提示 + 核对结果）
  */
-function mergeDocs(docs, failed = [], server = []) {
+function mergeDocs(records, failed = [], server = []) {
+  // 报关单证照用；发票记录中的数电发票换成附属单据（invoiceDoc），其他发票不参与
+  const asDoc = (d) => (d.类别 !== "发票" ? d : isInvoice(d) ? invoiceDoc(d) : null);
+  const docs = records.map(asDoc).filter(Boolean);
   for (const d of docs) d.issues = [...d.自身提示];
   const byNo = new Map();
   for (const d of [...docs.filter((d) => !d.归属 && !isAttach(d) && d.header.海关编号), ...server]) {
@@ -456,7 +430,7 @@ function mergeDocs(docs, failed = [], server = []) {
   }
   for (const v of unassigned("数电发票")) for (const g of groupsWhere((d) => mentions(v.全文, d))) g.push(v);
   // 服务器比对出的（serverDecls 的 附属）：本地提运单并入只在服务器上的报关单
-  for (const g of groups) for (const srv of g.filter((d) => d.服务器)) for (const b of srv.附属 || []) if (!g.includes(b)) g.push(b);
+  for (const g of groups) for (const srv of g.filter((d) => d.服务器)) for (const b of (srv.附属 || []).map(asDoc)) if (!g.includes(b)) g.push(b);
   for (const f of failed.filter((f) => f.无文字层)) {
     const parts = f.原文件名.replace(/\.pdf$/i, "").toUpperCase().split(/[^0-9A-Z]+/);
     const b = blank({ 单据类型: "提运单", 版式: "提运单（按文件名推断）", 原文件名: f.原文件名, 来源: f, 集装箱号: [] });
@@ -466,7 +440,7 @@ function mergeDocs(docs, failed = [], server = []) {
   for (const d of docs.filter((d) => d.归属)) byKey.get(d.归属)?.push(d);
   const rows = groups.map(mergeGroup);
   const grouped = new Set(groups.flat());
-  for (const d of docs.filter((d) => !grouped.has(d))) {
+  for (const d of docs.filter((d) => !grouped.has(d) && d.单据类型 !== "数电发票")) { // 对不上的发票只在发票视图
     d.issues.push("同批中没有对应的报关单");
     const files = [{ member: d, name: "" }]; // 不知道归到哪份报关单，没有打包位置，不打包、不提交
     rows.push({ key: `${d.单据类型}#${d.原文件名}`, members: [d], files, suspect: d.单据类型 === "提运单", data: { ...d, 单据: fileList(files), 缺少: [], 归档位置: "" } });
@@ -480,7 +454,7 @@ const noOf = (d) => d.键 || d.header.海关编号;
 const NO_CONTRACT = "无合同号";
 const BAD_CONTRACT = "合同号异常";
 /** 合同协议号最长 32 位；更长、或含乱码常见的字符（替换符 �、私用区、控制字符）的是识别错了（非标准 PDF、取到了别的栏） */
-const badContract = (s) => s.length > 32 || /[�-\u0000-\u001F]/.test(s);
+const badContract = (s) => s.length > 32 || /[\uFFFD\uE000-\uF8FF\u0000-\u001F]/.test(s);
 
 /** 组内各单据：类型、版式、原文件名、打包后的位置 */
 const fileList = (files) => files.map(({ member, name }) => ({ 单据类型: member.单据类型, 版式: member.版式, 原文件名: member.原文件名, 归档位置: name }));
@@ -504,12 +478,9 @@ function mergeGroup(g) {
   const refund = g.find((d) => d.单据类型 === "出口退税联");
   const srv = g.find((d) => d.服务器);
   const local = g.filter((d) => !d.服务器);
-  const onlyServer = docs.every((d) => d.服务器); // 报关单类单据都只在服务器上：只有清单里的几项
-  // 本地有识别出编号的单据才有完整海关编号；否则（只在服务器上，或只补传了手动文件）是部分隐去的，归档名用“前4-后4”
-  const known = docs.some((d) => !d.服务器 && d.header.海关编号);
-  const no = known ? header.海关编号 : (header.海关编号 || "").replace(/\*+/g, "-");
+  const onlyServer = docs.every((d) => d.服务器); // 报关单类单据都只在服务器上：只有清单里的几项，海关编号部分隐去
   const folder = [header.合同协议号, (header.申报日期 || "无申报日期").replace(/-/g, "")].map(X.safeName).join("/");
-  const fileOf = (t) => `${folder}/${X.safeName(`${t}_${t === "提运单" ? header.提运单号 || "无提运单号" : no}`)}.pdf`;
+  const fileOf = (t) => `${folder}/${X.safeName(`${t}_${t === "提运单" ? header.提运单号 || "无提运单号" : header.海关编号}`)}.pdf`;
   const nameOf = (d) => (d.发票号码 ? `${folder}/${X.safeName(`数电发票_${d.发票号码}`)}.pdf` : d.归属 ? manualName(fileOf(d.单据类型)) : fileOf(d.单据类型));
   const files = local.map((d) => ({ member: d, name: nameOf(d) }));
   return {
@@ -517,7 +488,7 @@ function mergeGroup(g) {
     data: {
       单据类型: "报关单", header, items: refund ? refund.items : [], totals: refund ? refund.totals : {},
       服务器: onlyServer,
-      服务器校验: known ? undefined : srv?.校验, // 没有完整编号的：提交并入它的文件时，清单里直接记到这一组（serverMeta）
+      服务器校验: onlyServer ? srv.校验 : undefined, // 没有完整编号：提交并入它的提运单、发票时，清单里直接记到这一组（serverMeta）
       已提交: srv ? srv.已提交 : {}, // 清单里有的单据类型 → 提交时间、提交者 IP
       集装箱号: [...new Set(docs.flatMap((d) => d.集装箱号))],
       单据: fileList(files), 缺少: TYPE_ORDER.filter((t) => !local.some((d) => d.单据类型 === t)), 归档位置: folder + "/",
@@ -530,9 +501,9 @@ function mergeGroup(g) {
 }
 
 // ======================= 服务器上已提交的 =======================
-// 服务器只留非敏感的清单（scripts/serve.py 的 清单.jsonl）：每个文件一条，有合同号、申报日期、单据类型、部分隐去的报关单号，
-// 页面看到的完整报关单号只有校验值（serverKeys 给出本地的编号，服务器换成校验值比对）；海关编号、提运单号、集装箱号原文存在服务器上，
-// 只供比对提运单、数电发票（serverBill），查询时不发给页面
+// 服务器的清单（scripts/serve.py 的 清单.jsonl）按报关单汇总后发给页面：合同号、申报日期、部分隐去的报关单号、已提交的单据类型、校验值。
+// 完整报关单号只有校验值（serverKeys 给出本地的编号，服务器换成校验值比对）；海关编号、提运单号、集装箱号原文只在服务器上，
+// 供比对本地对不上报关单的提运单、数电发票（serverBill）。查询页列出全部，单据页面只拿到这些提运单、发票对上的
 
 /** 报关单号遮去中间：前 4 位海关代码、后 4 位便于对照 */
 const maskNo = (no) => (no && no.length > 8 ? no.slice(0, 4) + "*".repeat(no.length - 8) + no.slice(-4) : no || "");
@@ -548,27 +519,23 @@ const serverMeta = (d, member) => ({
     提运单号: d.header.提运单号 || "", 集装箱号: d.集装箱号 || [],
   }],
 });
-/** 查询后拿去与清单比对的本地编号 */
+/** 拿去与清单比对的本地编号（已提交了哪些单据类型） */
 const serverKeys = (d) => (d.header?.海关编号 ? [d.header.海关编号] : []);
-/** 查询后交给服务器比对的本地提运单、数电发票（全文，数电发票为备注栏；集装箱号），同 mergeDocs 的 mentions */
-const serverBill = (d) => (isAttach(d) && !d.归属 ? { 全文: d.全文 || "", 集装箱号: d.集装箱号 || [] } : null);
+/** 交给服务器比对的本地提运单、数电发票（全文，数电发票为备注栏；集装箱号），同 mergeDocs 的 mentions */
+const serverBill = (d) => (isInvoice(d) ? { 全文: invoiceDoc(d).全文, 集装箱号: [] }
+  : d.单据类型 === "提运单" && !d.归属 ? { 全文: d.全文 || "", 集装箱号: d.集装箱号 || [] } : null);
 
 /**
- * 服务器清单 → 每份报关单一条记录（交给 mergeDocs 的 server）。keymap：校验值 → 本地单据的完整编号；
- * 对上的以完整编号成组（与本地单据合为一行），对不上的只有部分隐去的编号，以校验值成组。
- * billmap：本地提运单 → 服务器比对出的组 [{ 校验, 提运单号? }]，记为该组的 附属（mergeDocs 并入），按提运单号对上的带回号码供归档命名
+ * 服务器上的报关单 [{ 校验, 名称, 合同协议号, 申报日期, 已提交: {单据类型: 说明} }] → 每份一条记录（交给 mergeDocs 的 server）。
+ * keymap：校验值 → 本地单据的完整编号，对上的以完整编号成组（与本地单据合为一行），对不上的只有部分隐去的编号，以校验值成组。
+ * billmap：本地提运单、发票 → 服务器比对出的报关单（带 提运单号 的是按它对上的，供归档命名），记为该报关单的 附属（mergeDocs 并入）
  */
-function serverDecls(entries, keymap = {}, billmap = new Map()) {
-  const groups = new Map();
-  for (const e of entries)
-    for (const g of e.组 || []) {
-      if (!groups.has(g.校验)) groups.set(g.校验, { 名称: g.名称, 合同协议号: e.合同协议号, 申报日期: e.申报日期, 已提交: {} });
-      groups.get(g.校验).已提交[e.单据类型] = `${(e.提交时间 || "").replace("T", " ")} · ${e.提交IP || ""}`;
-    }
-  return [...groups].map(([h, g]) => {
+function serverDecls(groups, keymap = {}, billmap = new Map()) {
+  return [...new Map(groups.map((g) => [g.校验, g])).values()].map((g) => {
+    const h = g.校验;
     const hits = [...billmap].flatMap(([bill, gs]) => gs.filter((x) => x.校验 === h).map((x) => ({ bill, no: x.提运单号 })));
     return blank({
-      单据类型: "已提交", 服务器: true, 键: keymap[h] || `#${h}`, 校验: h, 已提交: g.已提交, 集装箱号: [], 自身提示: [],
+      单据类型: "已提交", 服务器: true, 键: keymap[h] || `#${h}`, 校验: h, 已提交: g.已提交 || {}, 集装箱号: [], 自身提示: [],
       附属: hits.map((x) => x.bill),
       header: { 合同协议号: g.合同协议号 || "", 申报日期: g.申报日期 || "", 海关编号: keymap[h] || g.名称, 提运单号: hits.find((x) => x.no)?.no || "" },
     });
@@ -582,4 +549,5 @@ const MANUAL = "_手动";
 const manualName = (name) => name.replace(/\.pdf$/i, `${MANUAL}.pdf`);
 const manualDoc = (key, type, fileName) => blank({ 单据类型: type, 版式: `${type}（手动补充）`, 原文件名: fileName, 归属: key, 集装箱号: [], 全文: "", 自身提示: [] });
 
-export { manualDoc, parseSplit, parseOcrBill, mergeDocs, serverDecls, serverMeta, serverKeys, serverBill };
+export { REFUND, RELEASE_CRYSTAL, RELEASE, PREFILL, ENTRUST_TICK_X, ENTRUST_STD_X, ENTRUST_PAPER, LAND_WAYBILL, BILL,
+  pageContext, parseCustoms, isContinued, maskNo, manualDoc, parseOcrBill, mergeDocs, serverDecls, serverMeta, serverKeys, serverBill };
