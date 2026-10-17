@@ -20,7 +20,7 @@
 
 | 配置 | 作用 |
 |---|---|
-| `[存档]` `switch = 1` | 开启提交和查询（默认 0：和在线版一样，纯本地） |
+| `[存档]` `switch = true` | 开启提交和查询（默认 false：和在线版一样，纯本地） |
 | `[查询白名单]` | 能进查询页的 IP 或网段，每行一个（本机写 127.0.0.1） |
 | `[下载]` `密码 = …` | 查询页下载归档的密码，为空不能下载 |
 | `[发票购买方白名单]` | 每行 `公司名称:统一社会信用代码`，不在名单内的发票标为需核对 |
@@ -64,7 +64,7 @@ scripts/
   samples.js              样本精简规则
   node-pdf.js             Node 读取 PDF、取二维码（check.js 用）
   vendor.js               从 node_modules 生成 site/vendor/
-.github/workflows/release.yml   手动发布：生成 vendor、写版本号、生成 config.ini 模板、打包
+.github/workflows/release.yml   手动发布：生成 vendor、写版本号、生成 config.ini 模板、打包，更新说明取自提交信息
 .github/workflows/pages.yml     推送到 main 时把 site/ 发布到 GitHub Pages
 ```
 
@@ -81,6 +81,12 @@ scripts/
 | `node scripts/check.js invoice <目录> --move <目录>` | 同上，并执行精简：移出冗余和失败的样本，保留的改为规范命名 |
 
 新增样本流程：加样本 → 跑回归、修程序 → 程序正确后加 `--move` 精简（精简不判断对错）。报关资料按整套保留，不精简。
+样本含商业信息，不入库，放在仓库外（`*.pdf` 已忽略）。
+
+### 版本与更新记录
+
+不另写更新日志：每个提交的说明写清对使用者的改动，发布时（release.yml）把上一个版本标签以来的提交信息作为 Release 说明。
+版本号在 `package.json`，遵循 [语义化版本](https://semver.org/lang/zh-CN/)：修复问题、调整识别规则升第三位，新增票种、新功能升第二位，数据格式或使用方式不兼容时升第一位。
 
 ## 设计说明
 

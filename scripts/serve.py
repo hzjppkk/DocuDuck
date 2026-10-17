@@ -9,7 +9,7 @@
 每次请求都让浏览器向服务器确认文件是否更新（no-cache），改过代码刷新即生效。局域网模式下 PDF 仍在各自的浏览器里识别。
 
 配置：scripts/config.ini（不入库，含密钥，不能放进 site/），分五节，改后重启生效：
-  [存档]              switch = 1 / 0：0（默认，没有这一项时也是）为纯本地模式，提交、查询、下载接口都不可用，页面上也不显示（不写存放目录）
+  [存档]              switch = true / false：false（默认，没有这一项时也是）为纯本地模式，提交、查询、下载接口都不可用，页面上也不显示（不写存放目录）
   [发票购买方白名单]  每行「公司名称:统一社会信用代码」，GET /api/whitelist 原样提供给发票页面
   [查询白名单]        每行一个 IP 或网段（如 192.168.1.0/24）；本机也要写（127.0.0.1）
   [下载]              密码 = …：查询白名单内的人下载服务器上的归档文件时要输入；为空时不能下载
@@ -571,7 +571,7 @@ def main():
     cfg = read_config()
     ocr, allow = load_ocr(cfg.get("OCR", [])), load_allow(cfg.get("查询白名单", []))
     password = key_values(cfg.get("下载", [])).get("密码", "")
-    archive = key_values(cfg.get("存档", [])).get("switch", "0") == "1"
+    archive = key_values(cfg.get("存档", [])).get("switch", "").lower() == "true"
     store = pathlib.Path(args.store)
     can_write = archive and writable(store)  # 存档关闭时不碰存放目录
     root = pathlib.Path(args.root).resolve()

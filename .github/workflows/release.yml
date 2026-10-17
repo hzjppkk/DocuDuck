@@ -1,6 +1,6 @@
 # 手动发布：GitHub → Actions → release → Run workflow
 # 按 package-lock.json 安装第三方库并生成 site/vendor/，读取 package.json 的版本号，
-# 把 site/ 和服务端脚本（serve.py、OCR）打包为 DocuDuck-vX.Y.Z.zip（最高压缩），创建 vX.Y.Z 标签和 Release，说明取自 CHANGELOG.md 中对应版本的内容
+# 把 site/ 和服务端脚本（serve.py、OCR）打包为 DocuDuck-vX.Y.Z.zip（最高压缩），创建 vX.Y.Z 标签和 Release，说明为上一个标签以来的提交信息（不另写更新日志）
 name: release
 
 on:
@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 取全部提交和标签，生成更新说明
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -45,8 +47,8 @@ jobs:
           # 升级到新版本时注意保留本文件，不要被发布包中的空模板覆盖。
 
           [存档]
-          # 1：开启存档，可提交到本机服务器、查询已提交的；0：纯本地模式，提交、查询都不显示。
-          switch = 0
+          # true：开启存档，可提交到本机服务器、查询已提交的；false：纯本地模式，提交、查询都不显示。
+          switch = false
 
           [发票购买方白名单]
           # 每行「公司名称:统一社会信用代码」，冒号全角 / 半角均可。
@@ -73,10 +75,11 @@ jobs:
           EOF
           zip -9 -r "../$D.zip" "$D"
 
-      - name: 提取更新日志
-        # 用块写法：命令里含 “]: ”，写在一行会被 YAML 当成键值分隔符而解析失败
+      - name: 生成更新说明
+        # 上一个版本标签以来的提交（不含合并提交），每条一行；还没有标签时为全部提交
         run: |
-          awk -v v="${{ steps.v.outputs.version }}" '/^## \[/ { f = index($0, "[" v "]") > 0; next } f && !/^\[[^]]+\]: /' CHANGELOG.md > notes.md
+          PREV=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          git log --no-merges --pretty='- %s' ${PREV:+$PREV..}HEAD > notes.md
 
       - uses: softprops/action-gh-release@v2
         with:
