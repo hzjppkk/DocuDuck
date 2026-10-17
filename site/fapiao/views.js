@@ -4,7 +4,7 @@
  */
 import * as U from "../common/ui.js";
 import { brief, round2 } from "../common/text.js";
-import { parseOcrBill, mergeDocs, serverDecls, serverMeta, serverKeys, serverBill, manualDoc, maskNo } from "./customs.js";
+import { parseOcrBill, mergeDocs, serverDecls, serverMeta, serverKeys, serverBill, manualDoc, fileExt, maskNo } from "./customs.js";
 import { fullNo } from "./invoice.js";
 
 const { esc, fmtMoney } = U;
@@ -21,14 +21,14 @@ const sumTotals = (list) => {
   for (const d of list) for (const [c, v] of Object.entries(d.totals)) t[c] = (t[c] || 0) + v;
   return t;
 };
-const SHORT = { 出口退税联: "退税联", 预填单: "预填单", 放行通知书: "放行", 报关委托书: "委托", 提运单: "提运单", 数电发票: "数电发票" };
-// 展示单据时按取得的先后：先签委托，报关行发预填单核对，海关放行，装船后签提运单，结关后才能打印退税联，货代、报关行再开费用发票
-// （字段合并仍按 customs.js 的 TYPE_ORDER，退税联优先）
-const FLOW = ["报关委托书", "预填单", "放行通知书", "提运单", "出口退税联", "数电发票"];
+const SHORT = { 出口退税联: "退税联", 预填单: "预填单", 放行通知书: "放行", 报关委托书: "委托", 提运单: "提运单", 数电发票: "数电发票", 发货清单: "发货清单" };
+// 展示单据时按取得的先后：先签委托，报关行发预填单核对，海关放行，装船后签提运单，结关后才能打印退税联，货代、报关行再开费用发票；
+// 发货清单（Excel，只能手动补充）列在最后（字段合并仍按 customs.js 的 TYPE_ORDER，退税联优先）
+const FLOW = ["报关委托书", "预填单", "放行通知书", "提运单", "出口退税联", "数电发票", "发货清单"];
 const docsText = (d) => FLOW.filter((t) => d.单据.some((x) => x.单据类型 === t)).map((t) => SHORT[t]).join(" ");
 const missingText = (d) => FLOW.filter((t) => d.缺少.includes(t)).map((t) => SHORT[t]).join(" ");
-// 齐套要求的单据（退税联结关后才能打印、数电发票是费用凭证，都不要求）
-const REQUIRED = FLOW.filter((t) => t !== "出口退税联" && t !== "数电发票");
+// 齐套要求的单据（退税联结关后才能打印、数电发票是费用凭证、发货清单是补充材料，都不要求）
+const REQUIRED = FLOW.filter((t) => t !== "出口退税联" && t !== "数电发票" && t !== "发货清单");
 
 const HEADER_SHOW = ["海关编号", "预录入编号", "出口日期", "申报日期", "出口口岸", "境内收发货人", "生产销售单位", "境外收货人",
   "运输方式", "运输工具名称", "提运单号", "贸易方式", "征免性质", "结汇方式", "许可证号", "运抵国", "指运港",
@@ -111,9 +111,9 @@ export const customsView = {
       return submitted(d, t, srv) ? [{ 单据类型: t, 状态: "已提交", 版式: d.已提交?.[t] || "", 归档位置: "已提交" }] : [{ 单据类型: t, 状态: "未提交" }];
     }), [
       ["单据", (x) => `<span class="doc-${x.状态}">${esc(x.单据类型)}</span>`],
-      // 缺的单据可直接选文件补上（不识别，作为这份报关单的该类单据）；只在服务器上的（没有完整编号、查询页只读）不能补
+      // 缺的单据可直接选文件补上（不识别，作为这份报关单的该类单据；文件格式见 fileExt）；只在服务器上的（没有完整编号、查询页只读）不能补
       ["版式", (x) => (x.状态 === "未提交" && d.单据类型 === "报关单" && !d.服务器
-        ? `<button type="button" class="link" data-fill="${x.单据类型}">上传</button>` : `<span class="doc-${x.状态}">${esc(x.版式)}</span>`)],
+        ? `<button type="button" class="link" data-fill="${x.单据类型}" data-accept="${fileExt(x.单据类型)}">上传</button>` : `<span class="doc-${x.状态}">${esc(x.版式)}</span>`)],
       ["原文件名", (x) => (x.原文件名 ? `<a href="#" class="open doc-${x.状态}" data-open="${esc(x.原文件名)}">${esc(x.原文件名)}</a>` : "")],
       ["打包后", (x) => `<span class="doc-${x.状态}">${esc(x.归档位置)}</span>`],
     ]) +

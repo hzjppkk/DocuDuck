@@ -20,7 +20,7 @@
     单据类型、部分隐去的报关单号等）、大小、修改时间、提交者 IP、提交时间，下载过的再记 下载：[{ IP, 时间 }]；完整编号、归档路径只记校验值（HMAC，密钥在 --store 下的
     .清单密钥，看不出原文）；海关编号、提运单号、集装箱号原文只供服务器比对提运单、数电发票，查询时不发给页面。查询、问是否已提交都只读清单，不遍历目录；
     删除归档文件后清单保留
-  PUT /api/files/<工具目录>/<路径>.pdf 上传：同名已存在且修改时间比上传的晚，或时间相同、大小也相同时不写（409），否则覆盖（200），
+  PUT /api/files/<工具目录>/<路径>.pdf（或 .xlsx，如发货清单）上传：同名已存在且修改时间比上传的晚，或时间相同、大小也相同时不写（409），否则覆盖（200），
     新文件 201；
     请求头 X-Last-Modified：原文件修改时间（毫秒），文件按它设修改时间；请求体开头是清单字段（JSON，字节数见 X-Meta-Length，
     见 manifest_entry），其后是文件
@@ -68,6 +68,7 @@ MAX_SIZE = 100 * 1024 * 1024
 MAX_OCR_PAGES = 20
 MANIFEST = "清单.jsonl"
 KEY_FILE = ".清单密钥"
+ARCHIVE_SUFFIXES = (".pdf", ".xlsx")  # 可提交、可下载的归档文件
 DOWNLOAD_TTL = 3600  # 下载凭据的有效期（秒）
 
 
@@ -305,7 +306,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.refuse(404, "存档已关闭")
         if not self.can_write:
             return self.refuse(403, "服务器不能写入")
-        if not p or p.suffix.lower() != ".pdf" or "/" not in rel:
+        if not p or p.suffix.lower() not in ARCHIVE_SUFFIXES or "/" not in rel:
             return self.refuse(400, "路径不合法")
         if size > MAX_SIZE:
             return self.refuse(413, "文件太大")
@@ -437,7 +438,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             Handler.password_fails = (0, 0)
         if not d:
             return self.reply(400, {"error": "目录不对"})
-        files = [(p, (st := p.stat()).st_size, st.st_mtime_ns) for p in sorted(d.rglob("*.pdf")) if p.is_file()] if d.is_dir() else []
+        files = [(p, (st := p.stat()).st_size, st.st_mtime_ns) for p in sorted(d.rglob("*")) if p.is_file() and p.suffix.lower() in ARCHIVE_SUFFIXES] if d.is_dir() else []
         token = secrets.token_urlsafe(24)
         with self.downloads_lock:
             now = time.time()

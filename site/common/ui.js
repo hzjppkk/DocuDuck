@@ -16,8 +16,8 @@
  *   fileColumn(筛选)：返回 false 时不显示原文件名列
  *   suspect { label, re }：文件名匹配 re 的识别不了的文件、merge 标了 suspect 的行归为“疑似”（sus）
  *   lacking(data, 查询)：返回 true 时状态为“缺文件”（次于需核对）
- *   fill(行 id, 行的 data, 单据类型, file) → 解析结果：详情里 data-fill="单据类型" 的按钮选一个 PDF，不经识别直接作为该行的这类单据，
- *     由 merge 归入该行（同名同大小的无法识别记录一并去掉）
+ *   fill(行 id, 行的 data, 单据类型, file) → 解析结果：详情里 data-fill="单据类型" 的按钮选一个文件（格式为按钮的 data-accept，
+ *     如 ".xlsx"，缺省为 PDF），不经识别直接作为该行的这类单据，由 merge 归入该行（同名同大小的无法识别记录一并去掉）
  *   groupBy(data) → 分组名 | null，groupRow(分组名, [data]) → 各列的 HTML：列表按分组折叠（如按合同号），
  *     分组行显示概况和组内最差的状态，点击展开；搜索、筛选时自动展开。只有一行的组不分组；不分组的行排在所有分组之后
  *   以下与存档（提交到服务器）有关，由 archive.js 实现：
@@ -33,7 +33,7 @@
  *   query：查询页（只读）：不能拖入文件，打开即列出服务器上已提交的（查询白名单内），工具栏只有搜索、下载归档、删除归档
  *   ocr { on: [状态], parse(文字, file) → [解析结果] }：服务器启用了 OCR（scripts/serve.py、config.ini 的 [OCR]）时，这些状态的无法识别行
  *     显示「OCR」按钮：文件经服务器交给 OCR 接口，返回的文字由 parse 解析，替换原来的出错记录
- * 原文件名可点击，在新标签页打开本地的 PDF；详情里 data-open="原文件名" 的元素同样（只在所在行的文件里找）
+ * 原文件名可点击，在新标签页打开本地的 PDF（其他格式下载）；详情里 data-open="原文件名" 的元素同样（只在所在行的文件里找）
  * 页面骨架（标题、拖放区、视图标签页、统计、工具栏、筛选、表格、页脚）由这里生成，html 只需以模块方式引入页面的 app.js。
  * 第三方库：pdf.js、SheetJS 为 ES 模块，在这里导入（SheetJS 导出 Excel 时才加载）；JSZip 只发布 UMD 版，由 html 用普通 <script> 加载为全局变量。
  */
@@ -261,7 +261,7 @@ function uniqueNames(entries) {
       if (same.meta && meta) same.meta = { ...same.meta, 组: [...same.meta.组, ...meta.组.filter((g) => !same.meta.组.some((h) => h.校验 === g.校验))] };
       continue;
     }
-    const x = { name: list.length ? name.replace(/\.pdf$/i, `(${list.length + 1}).pdf`) : name, file, meta };
+    const x = { name: list.length ? name.replace(/(\.\w+)?$/, `(${list.length + 1})$1`) : name, file, meta };
     used.set(name, [...list, x]);
     out.push(x);
   }
@@ -511,10 +511,10 @@ function createApp(c) {
     if (open) {
       e.preventDefault();
       const rec = filesOf(row).find((x) => x.fileName === open.dataset.open);
-      if (rec) openPdf(rec.file);
+      if (rec) openFile(rec.file);
       return;
     }
-    if (fill) return pickFill(row, fill.dataset.fill);
+    if (fill) return pickFill(row, fill.dataset.fill, fill.dataset.accept);
     const grp = e.target.closest("tr.group");
     if (grp) {
       const g = grp.dataset.group;
@@ -577,19 +577,21 @@ function createApp(c) {
     await downloadZip(entries, view.zipName);
   }));
 
-  /** 在新标签页打开本地 PDF（浏览器自带的阅读器） */
-  function openPdf(file) {
+  /** 在新标签页打开本地 PDF（浏览器自带的阅读器）；其他格式（如 Excel）浏览器打不开，下载 */
+  function openFile(file) {
     const url = URL.createObjectURL(file);
-    window.open(url, "_blank");
+    if (/\.pdf$/i.test(file.name)) window.open(url, "_blank");
+    else Object.assign(document.createElement("a"), { href: url, download: file.name }).click();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
-  /** 补单据：选一个 PDF，由当前视图的 fill 直接作为该行的这类单据；同一文件若在“无法识别”里，一并去掉 */
-  function pickFill(row, type) {
-    const input = Object.assign(document.createElement("input"), { type: "file", accept: ".pdf,application/pdf" });
+  /** 补单据：选一个 ext 格式的文件，由当前视图的 fill 直接作为该行的这类单据；同一文件若在“无法识别”里，一并去掉 */
+  function pickFill(row, type, ext = ".pdf") {
+    const input = Object.assign(document.createElement("input"), { type: "file", accept: ext });
     input.addEventListener("change", () => {
       const file = input.files[0];
       if (!file) return;
+      if (!file.name.toLowerCase().endsWith(ext)) return toast(`${type}只能上传 ${ext} 文件`); // accept 只是默认筛选，选择框里仍可改选所有文件
       const same = (r) => r.error && r.file.name === file.name && r.file.size === file.size;
       records = records.filter((r) => !same(r));
       records.push({ ...recordOf(file, view.fill(row.id, row.data, type, file)), id: nextId++ });

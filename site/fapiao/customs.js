@@ -353,7 +353,7 @@ function invoiceDoc(inv) {
 // 专家：match({ text: 首页文字, T: 首页文本块 })，parse(各页文本块)；顺序和逐页识别在 parser.js（与发票专家合成一组）
 
 /** 同一报关单的单据合并时的优先顺序（前者优先）：退税联是海关放行后打印的，最权威 */
-const TYPE_ORDER = ["出口退税联", "预填单", "放行通知书", "报关委托书", "提运单", "数电发票"];
+const TYPE_ORDER = ["出口退税联", "预填单", "放行通知书", "报关委托书", "提运单", "数电发票", "发货清单"];
 
 /** 一页的识别上下文 { T, text（各块直接连接，块内空格保留） }；T 为通用规整后的文本块（common/text.js prepare） */
 function pageContext(T) {
@@ -381,8 +381,8 @@ const NUMERIC_FIELDS = new Set(["件数", "毛重", "净重"]);
 const numOf = (v) => num(String(v).replace(/,/g, ""));
 const sameVal = (k, a, b) =>
   NUMERIC_FIELDS.has(k) && numOf(a) != null && numOf(b) != null ? Math.abs(numOf(a) - numOf(b)) < 0.001 : normNo(a) === normNo(b);
-/** 附属单据：提运单、数电发票，按编号挂到报关单下，不参与字段合并和核对 */
-const isAttach = (d) => d.单据类型 === "提运单" || d.单据类型 === "数电发票";
+/** 附属单据：提运单、数电发票按编号挂到报关单下，发货清单只能手动补充；都不参与字段合并和核对 */
+const isAttach = (d) => d.单据类型 === "提运单" || d.单据类型 === "数电发票" || d.单据类型 === "发货清单";
 const isDecl = (d) => d.单据类型 !== "报关委托书" && !isAttach(d);
 /**
  * 关联提运单、数电发票的统一规则：规整后的全文（大写、只留字母数字；数电发票只取备注栏）中出现了这份报关单的海关编号，
@@ -402,9 +402,10 @@ const billNo = (d) => {
  * - failed：识别不了的文件 [{ 原文件名, 错误, 无文字层 }]。其中的扫描件（无文字层），文件名按非字母数字切开后有一段与某份报关单的
  *   提运单号完全相同的，按提单并入（版式记为“按文件名推断”，不另提示），并入的单据其 来源 即该对象。有文字层的（保函、申请等）不推断
  * - 组内按 退税联 → 预填单 → 放行通知书 → 报关委托书 的顺序合并字段（前者优先）、逐项核对
- * - 打包路径：合同号/申报日期/单据类型_报关单号.pdf（提运单为 提运单_提运单号.pdf，数电发票为 数电发票_发票号码.pdf）；不成组的单据单列一行，带提示（不打包）
+ * - 打包路径：合同号/申报日期/单据类型_报关单号.pdf（提运单为 提运单_提运单号.pdf，数电发票为 数电发票_发票号码.pdf，
+ *   发货清单为 发货清单_报关单号.xlsx）；不成组的单据单列一行，带提示（不打包）
  * - 数电发票：同提运单的规则（mentions），只看备注栏；并入该组，可属于多组；归档为 数电发票_发票号码.pdf
- * - 手动补充的单据（manualDoc，带 归属 = 组的 key）不经匹配，直接并入该组
+ * - 手动补充的单据（manualDoc，带 归属 = 组的 key）不经匹配，直接并入该组；发货清单不识别，只能这样补充
  * - server：服务器上已提交的报关单（serverDecls 的记录），按 键（对上本地编号的为完整编号）与本地单据同样成组，排在最后、不参与核对、不打包；
  *   组里没有本地文件的，members 为空
  * 会改写每份单据的 issues（自身提示 + 核对结果）
@@ -480,8 +481,9 @@ function mergeGroup(g) {
   const local = g.filter((d) => !d.服务器);
   const onlyServer = docs.every((d) => d.服务器); // 报关单类单据都只在服务器上：只有清单里的几项，海关编号部分隐去
   const folder = [header.合同协议号, (header.申报日期 || "无申报日期").replace(/-/g, "")].map(X.safeName).join("/");
-  const fileOf = (t) => `${folder}/${X.safeName(`${t}_${t === "提运单" ? header.提运单号 || "无提运单号" : header.海关编号}`)}.pdf`;
-  const nameOf = (d) => (d.发票号码 ? `${folder}/${X.safeName(`数电发票_${d.发票号码}`)}.pdf` : d.归属 ? manualName(fileOf(d.单据类型)) : fileOf(d.单据类型));
+  const fileOf = (t) => `${folder}/${X.safeName(`${t}_${t === "提运单" ? header.提运单号 || "无提运单号" : header.海关编号}`)}${fileExt(t)}`;
+  const nameOf = (d) => (d.发票号码 ? `${folder}/${X.safeName(`数电发票_${d.发票号码}`)}.pdf`
+    : d.归属 && !(d.单据类型 in ONLY_MANUAL) ? manualName(fileOf(d.单据类型)) : fileOf(d.单据类型));
   const files = local.map((d) => ({ member: d, name: nameOf(d) }));
   return {
     key: groupKey(noOf(g[0])), members: local, files,
@@ -491,7 +493,7 @@ function mergeGroup(g) {
       服务器校验: onlyServer ? srv.校验 : undefined, // 没有完整编号：提交并入它的提运单、发票时，清单里直接记到这一组（serverMeta）
       已提交: srv ? srv.已提交 : {}, // 清单里有的单据类型 → 提交时间、提交者 IP
       集装箱号: [...new Set(docs.flatMap((d) => d.集装箱号))],
-      单据: fileList(files), 缺少: TYPE_ORDER.filter((t) => !local.some((d) => d.单据类型 === t)), 归档位置: folder + "/",
+      单据: fileList(files), 缺少: TYPE_ORDER.filter((t) => !(t in ONLY_MANUAL) && !local.some((d) => d.单据类型 === t)), 归档位置: folder + "/",
       issues: [
         ...(header.合同协议号 === BAD_CONTRACT ? [`合同协议号识别异常：${rawContract.slice(0, 40)}${rawContract.length > 40 ? "…" : ""}`] : []),
         ...g.flatMap((d) => d.issues.map((s) => `${d.单据类型}：${s}`)),
@@ -544,10 +546,15 @@ function serverDecls(groups, keymap = {}, billmap = new Map()) {
 
 // ======================= 手动补充 =======================
 
-/** 手动补充的单据：不识别，直接作为 key 那一组的 type 类单据（打包时按该组的规范名称，末尾加 _手动） */
+/**
+ * 手动补充的单据：不识别，直接作为 key 那一组的 type 类单据（打包时按该组的规范名称，末尾加 _手动）。
+ * ONLY_MANUAL：只能手动补充的单据类型 → 文件格式（扩展名）；名称不加 _手动，没有时也不算缺少。其余类型为 PDF
+ */
+const ONLY_MANUAL = { 发货清单: ".xlsx" };
+const fileExt = (type) => ONLY_MANUAL[type] || ".pdf";
 const MANUAL = "_手动";
 const manualName = (name) => name.replace(/\.pdf$/i, `${MANUAL}.pdf`);
 const manualDoc = (key, type, fileName) => blank({ 单据类型: type, 版式: `${type}（手动补充）`, 原文件名: fileName, 归属: key, 集装箱号: [], 全文: "", 自身提示: [] });
 
 export { REFUND, RELEASE_CRYSTAL, RELEASE, PREFILL, ENTRUST_TICK_X, ENTRUST_STD_X, ENTRUST_PAPER, LAND_WAYBILL, BILL,
-  pageContext, parseCustoms, isContinued, maskNo, manualDoc, parseOcrBill, mergeDocs, serverDecls, serverMeta, serverKeys, serverBill };
+  pageContext, parseCustoms, isContinued, maskNo, manualDoc, fileExt, parseOcrBill, mergeDocs, serverDecls, serverMeta, serverKeys, serverBill };
