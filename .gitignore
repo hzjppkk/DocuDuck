@@ -1,0 +1,25 @@
+node_modules/
+# 第三方库由 scripts/vendor.js 生成，不入库（发布时构建）
+site/vendor/
+# 配置（存档开关、发票白名单、查询白名单、下载密码、OCR 密钥）为各自部署的，不入库；发布包中由 release.yml 生成空模板
+scripts/config.ini
+__pycache__/
+out/
+*.xlsx
+*.zip
+
+# 报关单、发票包含商业信息，切勿提交到公开仓库
+*.pdf
+*.ofd
+*.jpg
+
+# 提交到服务器的单据（serve.py 的默认存放目录），含商业信息，不入库
+submitted/
+
+# 浏览器网络记录、服务器清单及其密钥（含 IP、单据信息），不入库
+*.har
+*.jsonl
+.清单密钥
+
+# 本地参考资料（第三方接口文档），不入库
+API/

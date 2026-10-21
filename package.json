@@ -1,0 +1,21 @@
+{
+  "name": "docuduck",
+  "version": "1.0.0",
+  "description": "单据整理（DocuDuck）：在浏览器本地识别发票、财政电子票据、报关单证 PDF，导出 Excel、规范命名归档",
+  "license": "GPL-2.0-only",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "vendor": "node scripts/vendor.js",
+    "serve": "python scripts/serve.py",
+    "serve:local": "python scripts/serve.py --local",
+    "check:customs": "node scripts/check.js customs",
+    "check:invoice": "node scripts/check.js invoice"
+  },
+  "devDependencies": {
+    "jsqr": "^1.4.0",
+    "jszip": "^3.10.2",
+    "pdfjs-dist": "^6.3.289",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  }
+}

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>单据整理</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="common/style.css">
+<style>
+  .tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .tool {
+    display: block; padding: 24px; border-radius: 14px; text-decoration: none; color: var(--text);
+    background: var(--panel); border: 1px solid var(--border); transition: border-color .15s, box-shadow .15s;
+  }
+  .tool:hover, .tool:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); outline: none; }
+  .tool .icon { font-size: 40px; line-height: 1; }
+  .tool h2 { margin: 12px 0 6px; font-size: 20px; }
+  .tool p { margin: 0; color: var(--muted); font-size: 14px; }
+  .tool ul { margin: 12px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+  .tool .go { display: inline-block; margin-top: 14px; color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <h1>单据整理</h1>
+    <p class="sub">把 PDF 单据拖进浏览器，自动提取信息、核对数据，一键导出 Excel 台账。</p>
+    <p class="privacy" id="privacy">🔒 文件在你自己的电脑上识别。</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="tools">
+    <a class="tool" href="fapiao/">
+      <div class="icon" aria-hidden="true">📄</div>
+      <h2>单据核验</h2>
+      <p>发票、财政电子票据、报关单证一起拖入：报关单证按报关单归集，发票一张一行</p>
+      <ul>
+        <li>提取票面、表头的全部字段和明细</li>
+        <li>核对二维码、金额勾稽、税号校验位；报关单各单据互相核对</li>
+        <li>按内容规范命名 PDF，提交到服务器归档</li>
+      </ul>
+      <span class="go">进入 →</span>
+    </a>
+    <!-- 查询页：只对查询白名单内的 IP 显示（由 serve.py 判断） -->
+    <a class="tool" id="query" href="chaxun/" hidden>
+      <div class="icon" aria-hidden="true">🔍</div>
+      <h2>查询</h2>
+      <p>服务器上已提交的报关单、发票：查看、下载归档、删除归档</p>
+      <span class="go">进入 →</span>
+    </a>
+  </div>
+</main>
+
+<footer class="wrap foot">
+  <p>只支持带文字层的 PDF；图片、OFD、XML 等其他格式会被自动排除，扫描件无法识别。</p>
+</footer>
+<script type="module">
+  // 服务器（serve.py）开了哪些联网功能：提交（[存档]）、OCR（[OCR]）；在线版、纯本地模式问不到，都不显示
+  const get = (path) => fetch(path, { cache: "no-store" }).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+  Promise.all([get("api/files"), get("api/ocr")]).then(([files, ocr]) => {
+    if (files.query) document.getElementById("query").hidden = false;
+    const notes = ["文件在你自己的电脑上识别"];
+    if (files.archive && files.writable) notes.push("只有点「提交」才上传至服务器");
+    if (ocr.enabled) notes.push("点「OCR」时该文件会发给联网 OCR 服务");
+    document.getElementById("privacy").textContent = `🔒 ${notes.join("；")}。`;
+  });
+</script>
+</body>
+</html>
